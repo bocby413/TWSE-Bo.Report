@@ -1,21 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#14383d"/><stop offset="1" stop-color="#0a1416"/></linearGradient>
-  </defs>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#14383d"/><stop offset="1" stop-color="#0a1416"/></linearGradient></defs>
   <rect width="64" height="64" rx="14" fill="url(#bg)"/>
-  <!-- 多空儀表：左綠（空）到右紅（多），跟首頁的市場脈搏一樣 -->
-  <path d="M 12 34 A 20 20 0 0 1 19.5 18.4" fill="none" stroke="#34d399" stroke-width="6" stroke-linecap="butt"/>
-  <path d="M 21.2 16.9 A 20 20 0 0 1 42.8 16.9" fill="none" stroke="#f5c542" stroke-width="6"/>
-  <path d="M 44.5 18.4 A 20 20 0 0 1 52 34" fill="none" stroke="#ff5a68" stroke-width="6"/>
-  <!-- 指針指向偏多 -->
-  <line x1="32" y1="34" x2="44.5" y2="22.5" stroke="#e6f1f0" stroke-width="3" stroke-linecap="round"/>
-  <circle cx="32" cy="34" r="3.6" fill="#e6f1f0"/>
-  <circle cx="32" cy="34" r="1.6" fill="#0a1416"/>
-  <!-- 下面三根往上走的 K 棒 -->
-  <line x1="22" y1="44" x2="22" y2="57" stroke="#34d399" stroke-width="1.6"/>
-  <rect x="19.6" y="47.5" width="4.8" height="6.5" rx="1" fill="#34d399"/>
-  <line x1="32" y1="42.5" x2="32" y2="55.5" stroke="#ff5a68" stroke-width="1.6"/>
-  <rect x="29.6" y="45" width="4.8" height="7.5" rx="1" fill="#ff5a68"/>
-  <line x1="42" y1="41" x2="42" y2="54" stroke="#ff5a68" stroke-width="1.6"/>
-  <rect x="39.6" y="43" width="4.8" height="8" rx="1" fill="#ff5a68"/>
+  <!-- 螢幕 -->
+  <rect x="9" y="12" width="46" height="32" rx="4" fill="#0f2a2e" stroke="#2dd4bf" stroke-width="2.5"/>
+  <rect x="26" y="47" width="12" height="3" rx="1.5" fill="#2dd4bf"/>
+  <rect x="20" y="51" width="24" height="3" rx="1.5" fill="#2dd4bf" opacity=".6"/>
+  <!-- 螢幕裡的 K 棒 -->
+  <line x1="18" y1="24" x2="18" y2="39" stroke="#34d399" stroke-width="1.6"/><rect x="15.5" y="28" width="5" height="7" rx="1" fill="#34d399"/>
+  <line x1="27" y1="20" x2="27" y2="36" stroke="#ff5a68" stroke-width="1.6"/><rect x="24.5" y="23" width="5" height="8" rx="1" fill="#ff5a68"/>
+  <line x1="36" y1="22" x2="36" y2="38" stroke="#34d399" stroke-width="1.6"/><rect x="33.5" y="25" width="5" height="8" rx="1" fill="#34d399"/>
+  <line x1="45" y1="16" x2="45" y2="32" stroke="#ff5a68" stroke-width="1.6"/><rect x="42.5" y="18" width="5" height="9" rx="1" fill="#ff5a68"/>
 </svg>
