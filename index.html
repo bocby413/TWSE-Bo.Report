@@ -540,7 +540,10 @@ function label(score, strong, lean) {
 function setup(cv) {
   const dpr = window.devicePixelRatio || 1;
   // 寬度以外框為準，不看畫布自己：畫布的實際像素是 CSS 寬的 dpr 倍，用它量會越畫越大
-  const W = cv.parentElement.clientWidth || cv.clientWidth || 600, Hh = +cv.getAttribute('height') || 240;
+  // 高度只能從原始的 height 屬性讀一次記下來：cv.height = Hh*dpr 會把屬性改掉，
+  // 下次再讀就變成乘過 dpr 的值，Retina 螢幕每重畫一次就長高一倍
+  if (!cv.dataset.h) cv.dataset.h = cv.getAttribute('height') || 240;
+  const W = cv.parentElement.clientWidth || cv.clientWidth || 600, Hh = +cv.dataset.h;
   cv.width = W * dpr; cv.height = Hh * dpr; cv.style.height = Hh + 'px';
   const ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);
   return { ctx, W, Hh, dpr };
