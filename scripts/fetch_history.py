@@ -13,7 +13,7 @@
   大盤新聞      Google 新聞 RSS
 
 寫出來的檔：
-  history.json   全市場精簡版：每檔 120 天收盤與成交量、最近 20 天法人與融資、本益比殖利率、
+  history.json   全市場精簡版：每檔 120 天收盤與成交量、最近 20 天法人與融資融券、本益比殖利率、
                  用五年歷史算好的相似情境統計（ai），加權指數的開高低收。廣度、排行都算這個
   d/XXX.json     依代號前三碼分片的詳細版：收盤與成交量五年、開高低一年、法人與融資 60 天、基本面，
                  點到那檔才載入。開高低與法人另外用 from 標起始位置，前面不塞 null
@@ -1043,7 +1043,7 @@ def main():
             ai = None
         if ai and ai.get('10'):
             h['ai'] = ai
-        for k in ('fi', 'it', 'dl', 'mg'):
+        for k in ('fi', 'it', 'dl', 'mg', 'ms'):
             tail = series[k][off:]
             if any(v is not None for v in tail):
                 h[k] = tail
