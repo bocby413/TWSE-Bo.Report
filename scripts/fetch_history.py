@@ -107,7 +107,10 @@ def fetch_raw(url, tries=3, timeout=60):
         except Exception as e:
             last = str(e)
             print('  第 %d 次失敗：%s' % (i + 1, e), flush=True)
-            time.sleep(5 * (i + 1))
+            if getattr(e, 'code', None) == 404:
+                break                                  # 路徑不存在，再試也一樣
+            if i + 1 < tries:
+                time.sleep(5 * (i + 1))
     raise NetError(last or url)
 
 
@@ -352,6 +355,15 @@ def parse_insti(d, positional=None):
             # 自營商「合計」那欄：證交所排在自行／避險前面、櫃買排在後面，所以不能看順序，
             # 要挑名字裡沒有「自行」「避險」的那個
             idl = col_has(fields, ['自營商', '買賣超'], ['外', '自行', '避險'], 0)
+            if ifi < 0:
+                # 櫃買新版的欄名沒有群組名稱，只有「買進股數、賣出股數、買賣超股數」一組一組重複，
+                # 群組順序是：外資及陸資(不含自營商)、外資自營商、外資及陸資合計、投信、
+                # 自營商(自行)、自營商(避險)、自營商合計、三大法人合計。照順序取第 1、4、7 組
+                nets = [i for i, f in enumerate(fields) if '買賣超' in norm(f)]
+                if len(nets) >= 7:
+                    ifi, iit, idl = nets[0], nets[3], nets[6]
+                elif positional:
+                    ic, ifi, iit, idl = positional
             if ic < 0 or ifi < 0:
                 continue
         elif positional:
@@ -374,12 +386,10 @@ def tpex_i_urls(day):
     ad = day.strftime('%Y/%m/%d')
     base = 'https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade'
     return [
-        (base + '?type=Daily&sect=EW&date=%s&id=&response=json' % ad, None),
-        (base + '?type=Daily&sect=AL&date=%s&id=&response=json' % ad, None),
-        (base + '?type=Daily&sect=EW&date=%s&response=json' % ad, None),
-        ('https://www.tpex.org.tw/www/zh-tw/insti/dailyTradeSummary?type=Daily&sect=EW&date=%s&response=json' % ad, None),
+        (base + '?type=Daily&sect=EW&date=%s&response=json' % ad, (0, 4, 13, 22)),
+        (base + '?type=Daily&sect=EW&date=%s&id=&response=json' % ad, (0, 4, 13, 22)),
         ('https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php'
-         '?l=zh-tw&se=EW&t=D&d=%s&o=json' % roc(day), (0, 10, 13, 22)),
+         '?l=zh-tw&se=EW&t=D&d=%s&o=json' % roc(day), (0, 4, 13, 22)),
     ]
 
 
@@ -673,10 +683,13 @@ def load_store():
     for d in dates:
         done.setdefault(d, {'q'})
     # 櫃買的法人／融資各自有記號（iO、mO）。舊檔沒有這兩個記號，就看資料裡有沒有來補
+    # 不能信檔案裡的記號：之前解析錯的時候，把「連上了但 0 檔」的日子也記成做過了
     for d in dates:
-        if 'iO' not in done[d] and any(r.get('fi') is not None for c, r in days[d].items() if info.get(c, {}).get('m') == 'tpex'):
+        tp = [r for c, r in days[d].items() if info.get(c, {}).get('m') == 'tpex']
+        done[d].discard('iO'); done[d].discard('mO')
+        if any(r.get('fi') is not None for r in tp):
             done[d].add('iO')
-        if 'mO' not in done[d] and any(r.get('mg') is not None for c, r in days[d].items() if info.get(c, {}).get('m') == 'tpex'):
+        if any(r.get('mg') is not None for r in tp):
             done[d].add('mO')
     return days, info, taiex, taiex_ohl, set(meta.get('skip') or []), done
 
