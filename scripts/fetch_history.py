@@ -1,26 +1,36 @@
 # -*- coding: utf-8 -*-
-"""每個交易日盤後把上市＋上櫃「全部股票」的收盤價與成交量累積進 history.json，
-給 index.html（股市情勢）算均線、RSI、MACD 跟判斷趨勢用。
+"""每個交易日盤後把上市＋上櫃「全部股票」的資料累積進 repo，給 index.html 判斷趨勢用。
 
 證交所與櫃買的 API 沒開跨網域，網頁抓不到，所以在 GitHub Actions 先抓好放進 repo。
-這支抓的是「某一天」的整個市場，所以可以往回補：history.json 不存在或有缺的日子，就一天一天補回來，
-第一次跑大概要十幾分鐘（證交所有限速，每次請求之間要停一下）。
+每個來源抓的都是「某一天的整個市場」，所以可以往回補：缺哪天就補哪天。
+第一次跑要好幾十分鐘（證交所有限速），跑不完的下次接著補，寫檔是增量的。
 
-檔案格式（全部陣列都對齊 dates，那天沒成交就是 null）：
-  {"dates":["2026-03-20",…], "updated":"…", "keep":120,
-   "skip":["2026-04-03",…],                     ← 查過確定不是交易日的日子，下次不再問
-   "idx":{"TAIEX":[…]},                          ← 發行量加權股價指數
-   "q":{"2330":{"n":"台積電","m":"twse","c":[收盤…],"v":[成交張數…]}, …}}
+抓的東西：
+  每日行情      開高低收、成交張數            證交所 MI_INDEX／櫃買 日收盤行情
+  三大法人      外資、投信、自營商買賣超（張）  證交所 T86／櫃買 三大法人買賣明細
+  融資融券      融資餘額、融券餘額（張）        證交所 MI_MARGN／櫃買 融資融券餘額
+  基本面快照    本益比、殖利率、淨值比、月營收、每股盈餘   兩邊的 OpenAPI，一次一整份，每次跑累積
+  大盤新聞      Google 新聞 RSS
+
+寫出來的檔：
+  history.json   全市場精簡版：每檔 120 天收盤與成交量、最近 20 天法人與融資、本益比殖利率。
+                 加權指數、廣度、排行都算這個
+  d/XX.json      依代號前兩碼分片的詳細版：開高低收、法人、融資融券、基本面，點到那檔才載入
+  news.json      大盤新聞
 """
-import json, re, ssl, sys, time, urllib.request
+import json, os, re, ssl, time, urllib.request, urllib.parse, html
 from datetime import datetime, timedelta, timezone
+from xml.etree import ElementTree
 
 TPE = timezone(timedelta(hours=8))
-KEEP = 120              # 每檔保留幾個交易日。季線（MA60）要 60 天，再多留一倍畫圖用
-LOOKBACK = 200          # 往回補最多幾個「日曆日」，120 個交易日大約是 170 個日曆日
-MAX_DATES_PER_RUN = 150 # 一次最多補幾天，免得哪天卡住跑不完
+KEEP = 120              # 每檔保留幾個交易日
+MIN_CODES = 800         # 少於這個檔數就當抓壞了，不覆蓋舊檔
+CHIP_BACK = 60          # 法人與融資往回補幾個交易日就好（每天要多抓四支，省一點）
+LOOKBACK = 200          # 往回補最多幾個「日曆日」
+TIME_BUDGET = 38 * 60   # 跑超過這個秒數就先收工寫檔，下次接著補（Actions 的 timeout 設 50 分）
 TWSE_GAP = 3.5          # 證交所限速大約 5 秒 3 次，保守一點
 TPEX_GAP = 1.5
+T0 = time.time()
 
 UA = {
     'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -87,22 +97,30 @@ class NetError(Exception):
     """連不上或一直回非 JSON。跟「那天沒資料」是兩回事，所以分開"""
 
 
-def get(url, tries=3):
+def fetch_raw(url, tries=3, timeout=60):
     last = None
     for i in range(tries):
         try:
             req = urllib.request.Request(url, headers=UA)
-            with urllib.request.urlopen(req, timeout=60, context=CTX) as r:
-                raw = r.read().decode('utf-8', 'replace')
-            try:
-                return json.loads(raw)
-            except Exception:
-                last = '不是 JSON：' + raw[:120].replace('\n', ' ')
-                print('  第 %d 次%s' % (i + 1, last), flush=True)
+            with urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:
+                return r.read().decode('utf-8', 'replace')
         except Exception as e:
             last = str(e)
             print('  第 %d 次失敗：%s' % (i + 1, e), flush=True)
-        time.sleep(5 * (i + 1))
+            time.sleep(5 * (i + 1))
+    raise NetError(last or url)
+
+
+def get(url, tries=3):
+    last = None
+    for i in range(tries):
+        raw = fetch_raw(url, tries=1)
+        try:
+            return json.loads(raw)
+        except Exception:
+            last = '不是 JSON：' + raw[:120].replace('\n', ' ')
+            print('  第 %d 次%s' % (i + 1, last), flush=True)
+            time.sleep(5 * (i + 1))
     raise NetError(last or url)
 
 
@@ -110,7 +128,7 @@ def num(x):
     if x is None:
         return None
     s = str(x).replace(',', '').replace('+', '').strip()
-    if s in ('', '--', '---', '-', 'X', '除權', '除息', '除權息'):
+    if s in ('', '--', '---', '-', 'X', '除權', '除息', '除權息', 'N/A', 'NA'):
         return None
     try:
         return float(s)
@@ -126,12 +144,30 @@ def clean(v, nd=2):
     return int(v) if v == int(v) else v
 
 
+def lots(v):
+    """股 → 張，取整數（負的也照樣往零取）"""
+    if v is None:
+        return None
+    return int(v // 1000) if v >= 0 else -int((-v) // 1000)
+
+
+def tick():
+    return time.time() - T0 > TIME_BUDGET
+
+
 CODE_RE = re.compile(r'^[0-9A-Z]{4,7}$')
+# 權證：證交所 0[3-8] 開頭六碼、櫃買 7[0-3] 開頭六碼（最後一碼可能是字母）。
+# 櫃買的日行情就算選「全部」也會把權證一起給，七千多檔、每檔活幾個月，不擋掉檔案會爆
+WARRANT_RE = re.compile(r'^(0[3-8]|7[0-3])\d{3}[0-9A-Z]$')
+
+
+def is_code(code):
+    return bool(CODE_RE.match(code)) and not WARRANT_RE.match(code)
 
 
 def tables_of(d):
-    """證交所新版回 tables=[{fields,data}]，舊版是 fields1/data1、fields2/data2…；
-    櫃買新版也是 tables。都轉成 [(fields, data)] 一種形狀"""
+    """證交所新版回 tables=[{fields,data}]，舊版是 fields1/data1、fields2/data2…、
+    單表的是 fields/data；櫃買新版也是 tables、舊版是 aaData。都轉成 [(fields, data)]"""
     out = []
     if not isinstance(d, dict):
         return out
@@ -144,252 +180,627 @@ def tables_of(d):
             out.append((d.get('fields%d' % i) or [], d['data%d' % i]))
     if isinstance(d.get('fields'), list) and isinstance(d.get('data'), list):
         out.append((d['fields'], d['data']))
+    if isinstance(d.get('aaData'), list):
+        out.append(([], d['aaData']))
     return out
 
 
+def norm(f):
+    return str(f).replace(' ', '').replace('　', '')
+
+
 def col(fields, *names):
-    """找欄位在第幾格。名稱有時會多個空白或括號，用「包含」比對"""
-    for i, f in enumerate(fields):
-        f = str(f).replace(' ', '')
-        for n in names:
-            if f == n:
-                return i
-    for i, f in enumerate(fields):
-        f = str(f).replace(' ', '')
+    """找欄位在第幾格：先找完全一樣的，再找開頭一樣的"""
+    fs = [norm(f) for f in fields]
+    for n in names:
+        if n in fs:
+            return fs.index(n)
+    for i, f in enumerate(fs):
         for n in names:
             if f.startswith(n):
                 return i
     return -1
 
 
-# ── 上市：MI_INDEX 一次回那天全部股票（type=ALLBUT0999 是「全部不含權證」）──
-TWSE_URLS = [
+def col_has(fields, must, must_not=(), which=0):
+    """找名稱「包含」這些字的欄位（which=-1 是最後一個）。法人那張表欄名很長又會改，用包含比對比較穩"""
+    hits = []
+    for i, f in enumerate(fields):
+        f = norm(f)
+        if all(m in f for m in must) and not any(m in f for m in must_not):
+            hits.append(i)
+    if not hits:
+        return -1
+    return hits[which]
+
+
+def no_data(d):
+    """證交所回 {"stat":"很抱歉, 沒有符合條件的資料!"} 就是那天不是交易日／還沒出來"""
+    if not isinstance(d, dict):
+        return True
+    stat = str(d.get('stat') or '')
+    return bool(stat) and stat.lower() != 'ok'
+
+
+def roc(day):
+    return '%d/%s/%s' % (day.year - 1911, day.strftime('%m'), day.strftime('%d'))
+
+
+def row_get(row, i):
+    return num(row[i]) if 0 <= i < len(row) else None
+
+
+# ── 每日行情 ──
+TWSE_Q = [
     'https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=%s&type=ALLBUT0999&response=json',
     'https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date=%s&type=ALLBUT0999',
 ]
 
 
-def parse_twse(d):
-    """回 (stocks, taiex, has_data)。stocks = {code: (name, close, vol_shares)}"""
-    if not isinstance(d, dict):
-        return {}, None, False
-    stat = str(d.get('stat') or '')
-    if stat and stat.upper() != 'OK':
-        return {}, None, False               # 「很抱歉, 沒有符合條件的資料!」＝ 不是交易日
+def parse_twse_quotes(d, extra=None):
+    """回 (stocks, taiex)。stocks = {code: {n,o,h,l,c,v}}；v 是股數"""
     stocks, taiex = {}, None
+    if no_data(d):
+        return stocks, taiex
     for fields, data in tables_of(d):
-        ic, inm, icl, iv = (col(fields, '證券代號'), col(fields, '證券名稱'),
-                            col(fields, '收盤價'), col(fields, '成交股數'))
+        ic, icl = col(fields, '證券代號'), col(fields, '收盤價')
         if ic >= 0 and icl >= 0:
+            inm, io, ih, il, iv = (col(fields, '證券名稱'), col(fields, '開盤價'), col(fields, '最高價'),
+                                   col(fields, '最低價'), col(fields, '成交股數'))
             for row in data:
                 if not isinstance(row, list) or len(row) <= max(ic, icl):
                     continue
                 code = str(row[ic]).strip()
-                if not CODE_RE.match(code):
+                if not is_code(code):
                     continue
-                close = num(row[icl])
-                name = str(row[inm]).strip() if inm >= 0 and inm < len(row) else ''
-                vol = num(row[iv]) if 0 <= iv < len(row) else None
-                stocks[code] = (name, close, vol)
+                stocks[code] = {'n': str(row[inm]).strip() if 0 <= inm < len(row) else '',
+                                'o': row_get(row, io), 'h': row_get(row, ih), 'l': row_get(row, il),
+                                'c': row_get(row, icl), 'v': row_get(row, iv)}
             continue
         ii, ix = col(fields, '指數'), col(fields, '收盤指數')
         if ii >= 0 and ix >= 0 and taiex is None:
             for row in data:
-                if isinstance(row, list) and len(row) > max(ii, ix) and \
-                        str(row[ii]).replace(' ', '') == '發行量加權股價指數':
+                if isinstance(row, list) and len(row) > max(ii, ix) and norm(row[ii]) == '發行量加權股價指數':
                     taiex = num(row[ix])
                     break
-    return stocks, taiex, bool(stocks)
+    return stocks, taiex
 
 
-# ── 上櫃：新版網站的日收盤行情，舊版兩個當備援 ──
-def tpex_urls(day):
-    roc = '%d/%s/%s' % (day.year - 1911, day.strftime('%m'), day.strftime('%d'))
+def tpex_q_urls(day):
     ad = day.strftime('%Y/%m/%d')
     return [
         'https://www.tpex.org.tw/www/zh-tw/afterTrading/otc?date=%s&type=EW&id=&response=json' % ad,
         'https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=%s&type=EW&response=json' % ad,
         'https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php'
-        '?l=zh-tw&d=%s&se=EW&o=json' % roc,
+        '?l=zh-tw&d=%s&se=EW&o=json' % roc(day),
         'https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php'
-        '?l=zh-tw&d=%s&se=EW&o=json' % roc,
+        '?l=zh-tw&d=%s&se=EW&o=json' % roc(day),
     ]
 
 
-def parse_tpex(d):
-    """回 {code: (name, close, vol_shares)}。新版有 fields 就照名字找，
-    舊版 aaData 沒欄名，固定是 代號,名稱,收盤,漲跌,開盤,最高,最低,成交股數…"""
+def parse_tpex_quotes(d, extra=None):
+    """新版有 fields 就照名字找；舊版 aaData 固定是 代號,名稱,收盤,漲跌,開盤,最高,最低,成交股數…"""
     stocks = {}
-    if not isinstance(d, dict):
-        return stocks
-    groups = tables_of(d)
-    if isinstance(d.get('aaData'), list):
-        groups.append(([], d['aaData']))
-    for fields, data in groups:
+    for fields, data in tables_of(d):
         if fields:
-            ic, inm, icl, iv = (col(fields, '代號', '證券代號'), col(fields, '名稱', '證券名稱'),
-                                col(fields, '收盤', '收盤價'), col(fields, '成交股數', '成交量'))
+            ic, icl = col(fields, '代號', '證券代號'), col(fields, '收盤', '收盤價')
             if ic < 0 or icl < 0:
                 continue
+            inm, io, ih, il, iv = (col(fields, '名稱', '證券名稱'), col(fields, '開盤', '開盤價'),
+                                   col(fields, '最高', '最高價'), col(fields, '最低', '最低價'),
+                                   col(fields, '成交股數', '成交量'))
         else:
-            ic, inm, icl, iv = 0, 1, 2, 7
+            ic, inm, icl, io, ih, il, iv = 0, 1, 2, 4, 5, 6, 7
         for row in data:
             if not isinstance(row, list) or len(row) <= max(ic, icl):
                 continue
             code = str(row[ic]).strip()
-            if not CODE_RE.match(code):
+            if not is_code(code):
                 continue
-            name = str(row[inm]).strip() if 0 <= inm < len(row) else ''
-            vol = num(row[iv]) if 0 <= iv < len(row) else None
-            stocks[code] = (name, num(row[icl]), vol)
+            stocks[code] = {'n': str(row[inm]).strip() if 0 <= inm < len(row) else '',
+                            'o': row_get(row, io), 'h': row_get(row, ih), 'l': row_get(row, il),
+                            'c': row_get(row, icl), 'v': row_get(row, iv)}
     return stocks
 
 
-def fetch_day(day):
-    """抓某一天。回 None 表示那天沒資料（假日），否則回 (stocks, taiex)。
-    連線問題丟 NetError，交給外面決定要不要放棄"""
-    ymd = day.strftime('%Y%m%d')
-    twse, taiex, has = {}, None, False
-    err = None
-    for u in TWSE_URLS:
+# ── 三大法人 ──
+TWSE_I = [
+    'https://www.twse.com.tw/rwd/zh/fund/T86?date=%s&selectType=ALLBUT0999&response=json',
+    'https://www.twse.com.tw/fund/T86?response=json&date=%s&selectType=ALLBUT0999',
+]
+
+
+def parse_insti(d, positional=None):
+    """回 {code: (外資淨, 投信淨, 自營商淨)}，單位股。
+    欄名兩邊都很長（「外陸資買賣超股數(不含外資自營商)」之類），用包含比對；
+    舊版櫃買 aaData 沒欄名就用 positional 給的位置"""
+    out = {}
+    if no_data(d):
+        return out
+    for fields, data in tables_of(d):
+        if fields:
+            ic = col(fields, '證券代號', '代號')
+            ifi = col_has(fields, ['外', '買賣超'], ['自營商'], 0)        # 外資及陸資(不含外資自營商)
+            if ifi < 0:
+                ifi = col_has(fields, ['外', '買賣超'], [], 0)
+            iit = col_has(fields, ['投信', '買賣超'])
+            # 自營商「合計」那欄：證交所排在自行／避險前面、櫃買排在後面，所以不能看順序，
+            # 要挑名字裡沒有「自行」「避險」的那個
+            idl = col_has(fields, ['自營商', '買賣超'], ['外', '自行', '避險'], 0)
+            if ic < 0 or ifi < 0:
+                continue
+        elif positional:
+            ic, ifi, iit, idl = positional
+        else:
+            continue
+        for row in data:
+            if not isinstance(row, list) or len(row) <= max(ic, ifi):
+                continue
+            code = str(row[ic]).strip()
+            if not is_code(code):
+                continue
+            out[code] = (row_get(row, ifi), row_get(row, iit), row_get(row, idl))
+    return out
+
+
+def tpex_i_urls(day):
+    ad = day.strftime('%Y/%m/%d')
+    return [
+        ('https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade?type=Daily&sect=EW&date=%s&response=json' % ad, None),
+        ('https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php'
+         '?l=zh-tw&se=EW&t=D&d=%s&o=json' % roc(day), (0, 10, 13, 22)),
+    ]
+
+
+# ── 融資融券 ──
+TWSE_M = [
+    'https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=%s&selectType=ALL&response=json',
+    'https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date=%s&selectType=ALL',
+]
+
+
+def parse_margin(d, positional=None):
+    """回 {code: (融資餘額, 融券餘額)}，單位張。
+    證交所那張表欄名是「今日餘額」出現兩次（前面融資、後面融券），用第幾次出現來分"""
+    out = {}
+    if no_data(d):
+        return out
+    for fields, data in tables_of(d):
+        if fields:
+            ic = col(fields, '股票代號', '代號', '證券代號')
+            if ic < 0:
+                continue
+            fs = [norm(f) for f in fields]
+            bal = [i for i, f in enumerate(fs) if '餘額' in f and '前' not in f]
+            fin = [i for i in bal if '資' in fs[i] and '券' not in fs[i]]
+            sht = [i for i in bal if '券' in fs[i] and '資' not in fs[i]]
+            if fin and sht:
+                img, ims = fin[0], sht[0]
+            elif len(bal) >= 2:
+                img, ims = bal[0], bal[1]
+            else:
+                continue
+        elif positional:
+            ic, img, ims = positional
+        else:
+            continue
+        for row in data:
+            if not isinstance(row, list) or len(row) <= max(ic, img, ims):
+                continue
+            code = str(row[ic]).strip()
+            if not is_code(code):
+                continue
+            out[code] = (num(row[img]), num(row[ims]))
+    return out
+
+
+def tpex_m_urls(day):
+    ad = day.strftime('%Y/%m/%d')
+    return [
+        ('https://www.tpex.org.tw/www/zh-tw/margin/balance?date=%s&response=json' % ad, None),
+        ('https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php'
+         '?l=zh-tw&d=%s&o=json' % roc(day), (0, 6, 14)),
+    ]
+
+
+def try_urls(urls, parse, gap, min_rows=1):
+    """逐一試來源，回 (result, reached)。reached=False 表示每個都連不上。
+    result 是 parse 的回傳（dict，或 (dict, 其他) 的 tuple）"""
+    reached = False
+    best = None
+    for item in urls:
+        url, extra = item if isinstance(item, tuple) else (item, None)
         try:
-            twse, taiex, has = parse_twse(get(u % ymd, tries=2))
-            err = None
-            break
-        except NetError as e:
-            err = e
-            time.sleep(TWSE_GAP)
-    if err:
-        raise err
-    if not has:
-        return None
-    time.sleep(TPEX_GAP)
-    tpex, tpex_ok = {}, False
-    for u in tpex_urls(day):
-        try:
-            tpex = parse_tpex(get(u, tries=1))
-            tpex_ok = True
-            if len(tpex) >= 300:
-                break
+            d = get(url, tries=1)
         except NetError:
-            pass
-        time.sleep(TPEX_GAP)
-    if not tpex_ok:
-        raise NetError('上櫃 %s 每個來源都連不上' % ymd)
-    stocks = {}
-    for c, (n, close, vol) in twse.items():
-        stocks[c] = {'n': n, 'm': 'twse', 'c': close, 'v': vol}
-    for c, (n, close, vol) in tpex.items():
-        stocks[c] = {'n': n, 'm': 'tpex', 'c': close, 'v': vol}
-    print('  %s 上市 %d、上櫃 %d，加權指數 %s' % (day, len(twse), len(tpex), taiex), flush=True)
-    return stocks, taiex, len(tpex) > 0
+            time.sleep(gap)
+            continue
+        reached = True
+        r = parse(d, extra)
+        rows = r[0] if isinstance(r, tuple) else r
+        if len(rows) >= min_rows:
+            return r, True
+        if best is None:
+            best = r
+        time.sleep(gap)
+    if best is None:
+        best = parse({}, None)
+    return best, reached
+
+
+# ── 基本面快照：一次一整份，抓到什麼就更新什麼，抓不到就沿用舊的 ──
+def fetch_fundamentals():
+    f = {}                                     # code -> dict
+
+    def put(code, **kw):
+        if not code:
+            return
+        f.setdefault(code, {}).update({k: v for k, v in kw.items() if v is not None})
+
+    # 本益比、殖利率、淨值比
+    for url, kc, kpe, ky, kpb in [
+        ('https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL', 'Code', 'PEratio', 'DividendYield', 'PBratio'),
+        ('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis', 'SecuritiesCompanyCode',
+         'PriceEarningRatio', 'YieldRatio', 'PriceBookRatio'),
+    ]:
+        try:
+            rows = get(url, tries=2)
+            n = 0
+            for r in rows if isinstance(rows, list) else []:
+                put(str(r.get(kc) or '').strip(), pe=clean(num(r.get(kpe))), yld=clean(num(r.get(ky))),
+                    pb=clean(num(r.get(kpb))))
+                n += 1
+            print('  本益比 %s：%d 檔' % (url.split('/')[2], n), flush=True)
+        except NetError as e:
+            print('  本益比抓不到 %s：%s' % (url, e), flush=True)
+
+    # 月營收。累積成 {yyyymm: [當月營收(千元), 年增%, 月增%]}，跑久了就有一整年
+    for url in ['https://openapi.twse.com.tw/v1/opendata/t187ap05_L',
+                'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O',
+                'https://www.tpex.org.tw/openapi/v1/t187ap05_O']:
+        try:
+            rows = get(url, tries=2)
+        except NetError as e:
+            print('  月營收抓不到 %s：%s' % (url, e), flush=True)
+            continue
+        n = 0
+        for r in rows if isinstance(rows, list) else []:
+            code = str(r.get('公司代號') or r.get('SecuritiesCompanyCode') or '').strip()
+            ym = str(r.get('資料年月') or r.get('DataYearMonth') or '').strip().replace('/', '')
+            rev = num(r.get('營業收入-當月營收') or r.get('CurrentMonthRevenue'))
+            yoy = num(r.get('營業收入-去年同月增減(%)') or r.get('LastYearMonthRevenueChangePercent'))
+            mom = num(r.get('營業收入-上月比較增減(%)') or r.get('LastMonthRevenueChangePercent'))
+            if code and ym and rev is not None:
+                put(code, rev={ym: [clean(rev, 0), clean(yoy, 1), clean(mom, 1)]})
+                n += 1
+        print('  月營收 %s：%d 檔' % (url.split('/')[-1], n), flush=True)
+        if n and 'twse' not in url:
+            break
+
+    # 每股盈餘（累計）。綜合損益表依行業分好幾份，有基本每股盈餘欄的都收
+    for url in ['https://openapi.twse.com.tw/v1/opendata/t187ap06_L_ci',
+                'https://openapi.twse.com.tw/v1/opendata/t187ap06_L_basi',
+                'https://openapi.twse.com.tw/v1/opendata/t187ap06_L_bd',
+                'https://openapi.twse.com.tw/v1/opendata/t187ap06_L_fh',
+                'https://openapi.twse.com.tw/v1/opendata/t187ap06_L_ins',
+                'https://openapi.twse.com.tw/v1/opendata/t187ap06_L_mim',
+                'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap06_O_ci',
+                'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap06_O_basi',
+                'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap06_O_bd',
+                'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap06_O_fh',
+                'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap06_O_ins',
+                'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap06_O_mim']:
+        try:
+            rows = get(url, tries=1)
+        except NetError:
+            continue
+        n = 0
+        for r in rows if isinstance(rows, list) else []:
+            code = str(r.get('公司代號') or r.get('SecuritiesCompanyCode') or '').strip()
+            y = str(r.get('年度') or r.get('Year') or '').strip()
+            q = str(r.get('季別') or r.get('Season') or '').strip()
+            eps = None
+            for k, v in r.items():
+                if '每股盈餘' in str(k) and '基本' in str(k):
+                    eps = num(v)
+                    break
+            if code and y and q and eps is not None:
+                put(code, eps={'%sQ%s' % (y, q): clean(eps, 2)})
+                n += 1
+        print('  EPS %s：%d 檔' % (url.split('/')[-1], n), flush=True)
+    return f
+
+
+def merge_fund(old, new):
+    """新的蓋舊的，但 rev／eps 是字典要合併，才累積得起來"""
+    out = dict(old or {})
+    for k, v in (new or {}).items():
+        if k in ('rev', 'eps'):
+            d = dict(out.get(k) or {})
+            d.update(v)
+            keys = sorted(d)[-(13 if k == 'rev' else 8):]        # 只留最近 13 個月／8 季
+            out[k] = {kk: d[kk] for kk in keys}
+        else:
+            out[k] = v
+    return out
+
+
+# ── 大盤新聞 ──
+def fetch_news():
+    items = []
+    for q in ['台股 大盤', '台積電 外資', '聯準會 美股']:
+        url = ('https://news.google.com/rss/search?q=%s&hl=zh-TW&gl=TW&ceid=TW:zh-Hant'
+               % urllib.parse.quote(q))
+        try:
+            raw = fetch_raw(url, tries=2, timeout=30)
+            root = ElementTree.fromstring(raw.encode('utf-8'))
+            for it in list(root.iter('item'))[:12]:
+                t = html.unescape(it.findtext('title') or '')
+                link = it.findtext('link') or ''
+                pub = it.findtext('pubDate') or ''
+                src = it.findtext('source') or ''
+                if t and link:
+                    items.append({'t': t, 'u': link, 'd': pub, 's': src, 'q': q})
+        except Exception as e:
+            print('  新聞抓不到 %s：%s' % (q, e), flush=True)
+    seen, out = set(), []
+    for it in items:
+        if it['t'] in seen:
+            continue
+        seen.add(it['t'])
+        out.append(it)
+    print('  新聞 %d 則' % len(out), flush=True)
+    return out
+
+
+# ── 主流程 ──
+KEYS = ('o', 'h', 'l', 'c', 'v', 'fi', 'it', 'dl', 'mg', 'ms')
+
+
+def shard_of(code):
+    """依代號前兩碼分片；00 開頭的 ETF 有三百多檔，多切一位免得那一片太大"""
+    return code[:3] if code.startswith('00') else code[:2]
+
+
+def load_store():
+    """把 d/*.json 攤回 days[date][code] = {...}，dates／skip／done 從 history.json 拿"""
+    meta = {}
+    try:
+        with open('history.json', encoding='utf-8') as f:
+            meta = json.load(f)
+    except Exception:
+        pass
+    dates = list(meta.get('dates') or [])
+    days = {d: {} for d in dates}
+    info = {}                                          # code -> {'n','m','f'}
+    taiex = dict(zip(dates, (meta.get('idx') or {}).get('TAIEX') or []))
+    if os.path.isdir('d'):
+        for fn in sorted(os.listdir('d')):
+            if not fn.endswith('.json'):
+                continue
+            try:
+                with open(os.path.join('d', fn), encoding='utf-8') as f:
+                    sh = json.load(f)
+            except Exception:
+                continue
+            sd = sh.get('dates') or []
+            for code, s in (sh.get('q') or {}).items():
+                info[code] = {'n': s.get('n', ''), 'm': s.get('m', ''), 'f': s.get('f') or {}}
+                for j, d in enumerate(sd):
+                    if d not in days:
+                        continue
+                    row = {}
+                    for k in KEYS:
+                        arr = s.get(k)
+                        if arr and j < len(arr) and arr[j] is not None:
+                            row[k] = arr[j]
+                    if row:
+                        days[d][code] = row
+    # 舊版 history.json（沒有 d/ 的時候）只有收盤跟成交量，也接得起來
+    if not info and meta.get('q'):
+        for code, s in meta['q'].items():
+            if not is_code(code):
+                continue
+            info[code] = {'n': s.get('n', ''), 'm': s.get('m', ''), 'f': {}}
+            for j, d in enumerate(dates):
+                c = (s.get('c') or [None] * len(dates))[j]
+                if c is not None:
+                    days[d][code] = {'c': c, 'v': (s.get('v') or [None] * len(dates))[j]}
+    done = {d: set(v) for d, v in (meta.get('done') or {}).items()}
+    for d in dates:
+        done.setdefault(d, {'q'})
+    return days, info, taiex, set(meta.get('skip') or []), done
+
+
+def kind_name(kind):
+    return '法人' if kind == 'i' else '融資'
 
 
 def main():
-    old = {}
-    try:
-        with open('history.json', encoding='utf-8') as f:
-            old = json.load(f)
-    except Exception:
-        pass
-    dates = list(old.get('dates') or [])
-    skip = set(old.get('skip') or [])
-    q = old.get('q') or {}
-    idx = (old.get('idx') or {}).get('TAIEX') or []
-    idx = list(idx) + [None] * (len(dates) - len(idx))
-
-    # 先把舊檔攤回「每天一份」，補完再重新排版
-    days = {}                                    # date -> {code: (close, vol)}
-    taiex = {}                                   # date -> close
-    meta = {}                                    # code -> (name, market)
-    for j, d in enumerate(dates):
-        days[d] = {}
-        taiex[d] = idx[j]
-    for code, s in q.items():
-        meta[code] = (s.get('n', ''), s.get('m', ''))
-        cs, vs = s.get('c') or [], s.get('v') or []
-        for j, d in enumerate(dates):
-            c = cs[j] if j < len(cs) else None
-            if c is not None:
-                days[d][code] = (c, vs[j] if j < len(vs) else None)
-
+    days, info, taiex, skip, done = load_store()
     now = datetime.now(TPE)
     today = now.date()
-    # 盤後大概 14:30 才有資料。太早問到的是「沒資料」，那不能當成假日記起來
+    # 盤後大概 14:30 才有行情；法人 16:00 後、融資 17:30 後才出來。太早問到的「沒資料」不能記成假日
     end = today if now.hour * 60 + now.minute >= 14 * 60 + 30 else today - timedelta(days=1)
+    chip_ok_today = now.hour * 60 + now.minute >= 17 * 60 + 35
     start = today - timedelta(days=LOOKBACK)
+
+    # 1. 行情：缺哪天補哪天（同時決定那天是不是交易日）。
+    #    沒有開高低的日子（舊版檔案留下的）也重抓一次
     todo = []
     day = start
     while day <= end:
         s = day.isoformat()
-        if day.weekday() < 5 and s not in days and s not in skip:
-            todo.append(day)
+        if day.weekday() < 5 and s not in skip:
+            have = days.get(s)
+            if have is None or not any('o' in r for r in list(have.values())[:50]):
+                todo.append(day)
         day += timedelta(days=1)
-    todo = todo[-MAX_DATES_PER_RUN:]
-    print('已有 %d 個交易日，要補 %d 天' % (len(days), len(todo)), flush=True)
-
+    print('已有 %d 個交易日，行情要補 %d 天' % (len(days), len(todo)), flush=True)
     got, stopped = 0, None
     for day in todo:
-        s = day.isoformat()
-        try:
-            r = fetch_day(day)
-        except NetError as e:
-            stopped = '%s：%s' % (s, e)
+        if tick():
+            stopped = '時間到了，先寫檔，下次接著補'
             break
-        if r is None:
-            if day < today:
-                skip.add(s)                      # 過去的日子沒資料就是假日，記起來
-            else:
-                print('  %s 還沒有資料，下次再抓' % s, flush=True)
+        s = day.isoformat()
+        (twse, tx), reached = try_urls([u % day.strftime('%Y%m%d') for u in TWSE_Q], parse_twse_quotes, TWSE_GAP, 300)
+        if not reached:
+            stopped = '%s 證交所連不上' % s
+            break
+        if not twse:
+            if day < today and s not in days:
+                skip.add(s)
+            elif day >= today:
+                print('  %s 行情還沒出來，下次再抓' % s, flush=True)
             time.sleep(TWSE_GAP)
             continue
-        stocks, tx, tpex_has = r
-        if day >= today and not tpex_has:
-            print('  上櫃還沒出來，今天先不記', flush=True)
+        time.sleep(TPEX_GAP)
+        tpex, reached2 = try_urls(tpex_q_urls(day), parse_tpex_quotes, TPEX_GAP, 300)
+        if not reached2:
+            stopped = '%s 櫃買連不上' % s
+            break
+        if day >= today and not tpex:
+            print('  %s 上櫃還沒出來，今天先不記' % s, flush=True)
             time.sleep(TWSE_GAP)
             continue
-        days[s] = {c: (v['c'], v['v']) for c, v in stocks.items() if v['c'] is not None}
+        rows = days.get(s) or {}
+        for mk, src in (('twse', twse), ('tpex', tpex)):
+            for code, q in src.items():
+                if q['c'] is None:
+                    continue
+                r = rows.setdefault(code, {})
+                r.update({'o': q['o'], 'h': q['h'], 'l': q['l'], 'c': q['c'], 'v': lots(q['v'])})
+                m = info.setdefault(code, {'f': {}})
+                m['n'] = q['n'] or m.get('n', '')
+                m['m'] = mk
+        days[s] = rows
         taiex[s] = tx
-        for c, v in stocks.items():
-            if v['n'] or c not in meta:
-                meta[c] = (v['n'], v['m'])
+        done.setdefault(s, set()).add('q')
         got += 1
+        print('  %s 上市 %d、上櫃 %d，加權指數 %s' % (s, len(twse), len(tpex), tx), flush=True)
         time.sleep(TWSE_GAP)
 
-    if stopped:
-        print('::warning::補到一半連不上，先寫入已經拿到的：%s' % stopped, flush=True)
-    if not got and not stopped and not todo:
-        print('沒有新的交易日', flush=True)
+    # 2. 法人與融資：最近 CHIP_BACK 個交易日裡還沒抓到的
+    trading = sorted(days)[-KEEP:]
+    for s in trading[-CHIP_BACK:]:
+        if stopped:
+            break
+        need = [k for k in ('i', 'm') if k not in done.get(s, set())]
+        if not need or (s == today.isoformat() and not chip_ok_today):
+            continue
+        day = datetime.strptime(s, '%Y-%m-%d').date()
+        for kind in need:
+            if tick():
+                stopped = '時間到了，先寫檔，下次接著補'
+                break
+            if kind == 'i':
+                a, r1 = try_urls([u % day.strftime('%Y%m%d') for u in TWSE_I], parse_insti, TWSE_GAP)
+                time.sleep(TPEX_GAP)
+                b, r2 = try_urls(tpex_i_urls(day), parse_insti, TPEX_GAP)
+            else:
+                a, r1 = try_urls([u % day.strftime('%Y%m%d') for u in TWSE_M], parse_margin, TWSE_GAP)
+                time.sleep(TPEX_GAP)
+                b, r2 = try_urls(tpex_m_urls(day), parse_margin, TPEX_GAP)
+            if not (r1 and r2):
+                stopped = '%s %s連不上' % (s, kind_name(kind))
+                break
+            if not a and not b:
+                if day < today:
+                    done[s].add(kind)                  # 過去的日子沒這份資料，就當沒有，不再問
+                else:
+                    print('  %s 今天的%s還沒出來' % (s, kind_name(kind)), flush=True)
+                time.sleep(TWSE_GAP)
+                continue
+            merged = dict(a)
+            merged.update(b)
+            n = 0
+            for code, vals in merged.items():
+                row = days[s].get(code)
+                if row is None:
+                    continue
+                if kind == 'i':
+                    row['fi'], row['it'], row['dl'] = lots(vals[0]), lots(vals[1]), lots(vals[2])
+                else:
+                    row['mg'], row['ms'] = clean(vals[0], 0), clean(vals[1], 0)
+                n += 1
+            done[s].add(kind)
+            print('  %s %s：上市 %d、上櫃 %d，對上 %d 檔' % (s, kind_name(kind), len(a), len(b), n), flush=True)
+            time.sleep(TWSE_GAP)
 
-    # 重新排版：只留最後 KEEP 個交易日，每檔對齊 dates
+    if stopped:
+        print('::warning::%s' % stopped, flush=True)
+
+    # 3. 基本面與新聞：每次都抓，抓不到沿用舊的
+    print('抓基本面…', flush=True)
+    try:
+        fund = fetch_fundamentals()
+    except Exception as e:
+        print('  基本面整個失敗：%s' % e, flush=True)
+        fund = {}
+    for code, f in fund.items():
+        if code in info:
+            info[code]['f'] = merge_fund(info[code].get('f'), f)
+    print('抓新聞…', flush=True)
+    news = []
+    try:
+        news = fetch_news()
+    except Exception as e:
+        print('  新聞整個失敗：%s' % e, flush=True)
+
+    # 4. 寫檔
     dates = sorted(days)[-KEEP:]
     skip = sorted(d for d in skip if d >= (today - timedelta(days=LOOKBACK + 30)).isoformat())
-    out_q = {}
-    for code, (name, market) in meta.items():
-        cs, vs, seen = [], [], False
-        for d in dates:
-            v = days[d].get(code)
-            if v is None:
-                cs.append(None)
-                vs.append(None)
-            else:
-                seen = True
-                cs.append(clean(v[0]))
-                vs.append(int(v[1] // 1000) if v[1] is not None else None)   # 股 → 張
-        if seen:
-            out_q[code] = {'n': name, 'm': market, 'c': cs, 'v': vs}
-
-    out = {'dates': dates, 'updated': now.strftime('%Y-%m-%d %H:%M'), 'keep': KEEP,
-           'count': len(out_q), 'skip': skip,
-           'idx': {'TAIEX': [clean(taiex.get(d)) for d in dates]},
-           'q': out_q}
-    if len(out_q) < 800 and old.get('q'):
-        print('::warning::這次只有 %d 檔，怪怪的，不覆蓋舊檔' % len(out_q), flush=True)
+    codes = [c for c in info if any(c in days[d] for d in dates)]
+    if len(codes) < MIN_CODES and os.path.exists('history.json'):
+        print('::warning::這次只有 %d 檔，怪怪的，不覆蓋舊檔' % len(codes), flush=True)
         return
-    with open('history.json', 'w', encoding='utf-8') as f:
-        json.dump(out, f, ensure_ascii=False, separators=(',', ':'))
-    print('寫入 history.json：%d 個交易日（%s ～ %s），%d 檔，這次新增 %d 天'
-          % (len(dates), dates[0] if dates else '-', dates[-1] if dates else '-', len(out_q), got))
+    hist_q, shards = {}, {}
+    n20 = min(20, len(dates))
+    off = len(dates) - n20
+    for code in codes:
+        m = info[code]
+        series = {k: [] for k in KEYS}
+        for d in dates:
+            row = days[d].get(code) or {}
+            for k in KEYS:
+                v = row.get(k)
+                series[k].append(clean(v) if k in ('o', 'h', 'l', 'c') else v)
+        s = {'n': m.get('n', ''), 'm': m.get('m', '')}
+        s.update(series)
+        if m.get('f'):
+            s['f'] = m['f']
+        shards.setdefault(shard_of(code), {})[code] = s
+        h = {'n': s['n'], 'm': s['m'], 'c': series['c'], 'v': series['v']}
+        for k in ('fi', 'it', 'mg'):
+            tail = series[k][off:]
+            if any(v is not None for v in tail):
+                h[k] = tail
+        f = m.get('f') or {}
+        for k in ('pe', 'yld'):
+            if f.get(k) is not None:
+                h[k] = f[k]
+        hist_q[code] = h
+
+    os.makedirs('d', exist_ok=True)
+    for sh, q in shards.items():
+        with open(os.path.join('d', sh + '.json'), 'w', encoding='utf-8') as fp:
+            json.dump({'dates': dates, 'q': q}, fp, ensure_ascii=False, separators=(',', ':'))
+    for fn in os.listdir('d'):
+        if fn.endswith('.json') and fn[:-5] not in shards:
+            os.remove(os.path.join('d', fn))
+    out = {'dates': dates, 'updated': now.strftime('%Y-%m-%d %H:%M'), 'keep': KEEP, 'count': len(hist_q),
+           'skip': skip, 'done': {d: sorted(done.get(d, {'q'})) for d in dates},
+           'idx': {'TAIEX': [clean(taiex.get(d)) for d in dates]},
+           'chipDays': n20, 'q': hist_q}
+    with open('history.json', 'w', encoding='utf-8') as fp:
+        json.dump(out, fp, ensure_ascii=False, separators=(',', ':'))
+    if news or not os.path.exists('news.json'):
+        with open('news.json', 'w', encoding='utf-8') as fp:
+            json.dump({'updated': now.strftime('%Y-%m-%d %H:%M'), 'items': news}, fp,
+                      ensure_ascii=False, separators=(',', ':'))
+    chip_have = sum(1 for d in dates if 'i' in done.get(d, set()))
+    print('寫入 history.json（%d 個交易日 %s ～ %s，%d 檔，這次新增 %d 天，法人有 %d 天）與 d/ %d 個分片'
+          % (len(dates), dates[0] if dates else '-', dates[-1] if dates else '-', len(hist_q), got, chip_have, len(shards)))
 
 
 if __name__ == '__main__':
