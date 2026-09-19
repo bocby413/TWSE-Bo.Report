@@ -13,8 +13,8 @@
   大盤新聞      Google 新聞 RSS
 
 寫出來的檔：
-  history.json   全市場精簡版：每檔 120 天收盤與成交量、最近 20 天法人與融資、本益比殖利率。
-                 加權指數、廣度、排行都算這個
+  history.json   全市場精簡版：每檔 120 天收盤與成交量、最近 20 天法人與融資、本益比殖利率，
+                 加權指數的開高低收。廣度、排行都算這個
   d/XX.json      依代號前兩碼分片的詳細版：開高低收、法人、融資融券、基本面，點到那檔才載入
   news.json      大盤新聞
 """
@@ -303,6 +303,31 @@ def parse_tpex_quotes(d, extra=None):
     return stocks
 
 
+# ── 加權指數的開高低收：一次一整個月 ──
+TWSE_X = 'https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST?date=%s&response=json'
+
+
+def parse_taiex_hist(d):
+    """回 {iso日期: (開, 高, 低, 收)}。日期是民國「115/09/01」"""
+    out = {}
+    if no_data(d):
+        return out
+    for fields, data in tables_of(d):
+        i_d, i_o, i_h, i_l, i_c = (col(fields, '日期'), col(fields, '開盤指數'), col(fields, '最高指數'),
+                                   col(fields, '最低指數'), col(fields, '收盤指數'))
+        if min(i_d, i_o, i_h, i_l, i_c) < 0:
+            continue
+        for row in data:
+            if not isinstance(row, list) or len(row) <= max(i_d, i_o, i_h, i_l, i_c):
+                continue
+            m = re.match(r'(\d{2,3})/(\d{2})/(\d{2})', str(row[i_d]).strip())
+            if not m:
+                continue
+            iso = '%04d-%s-%s' % (int(m.group(1)) + 1911, m.group(2), m.group(3))
+            out[iso] = (num(row[i_o]), num(row[i_h]), num(row[i_l]), num(row[i_c]))
+    return out
+
+
 # ── 三大法人 ──
 TWSE_I = [
     'https://www.twse.com.tw/rwd/zh/fund/T86?date=%s&selectType=ALLBUT0999&response=json',
@@ -573,7 +598,13 @@ def load_store():
     dates = list(meta.get('dates') or [])
     days = {d: {} for d in dates}
     info = {}                                          # code -> {'n','m','f'}
-    taiex = dict(zip(dates, (meta.get('idx') or {}).get('TAIEX') or []))
+    idx = meta.get('idx') or {}
+    taiex = dict(zip(dates, idx.get('TAIEX') or []))
+    taiex_ohl = {}                                     # date -> (o, h, l)
+    for j, d in enumerate(dates):
+        o = (idx.get('TAIEXo') or [None] * len(dates))[j]
+        if o is not None:
+            taiex_ohl[d] = (o, (idx.get('TAIEXh') or [])[j], (idx.get('TAIEXl') or [])[j])
     if os.path.isdir('d'):
         for fn in sorted(os.listdir('d')):
             if not fn.endswith('.json'):
@@ -609,7 +640,7 @@ def load_store():
     done = {d: set(v) for d, v in (meta.get('done') or {}).items()}
     for d in dates:
         done.setdefault(d, {'q'})
-    return days, info, taiex, set(meta.get('skip') or []), done
+    return days, info, taiex, taiex_ohl, set(meta.get('skip') or []), done
 
 
 def kind_name(kind):
@@ -617,7 +648,7 @@ def kind_name(kind):
 
 
 def main():
-    days, info, taiex, skip, done = load_store()
+    days, info, taiex, taiex_ohl, skip, done = load_store()
     now = datetime.now(TPE)
     today = now.date()
     # 盤後大概 14:30 才有行情；法人 16:00 後、融資 17:30 後才出來。太早問到的「沒資料」不能記成假日
@@ -680,8 +711,32 @@ def main():
         print('  %s 上市 %d、上櫃 %d，加權指數 %s' % (s, len(twse), len(tpex), tx), flush=True)
         time.sleep(TWSE_GAP)
 
-    # 2. 法人與融資：最近 CHIP_BACK 個交易日裡還沒抓到的
+    # 2. 加權指數的開高低：哪個月有交易日還沒有開盤指數就抓那個月（一個月一支請求）
     trading = sorted(days)[-KEEP:]
+    months = sorted({d[:7] for d in trading if d not in taiex_ohl})
+    for ym in months:
+        if stopped:
+            break
+        if tick():
+            stopped = '時間到了，先寫檔，下次接著補'
+            break
+        try:
+            got_x = parse_taiex_hist(get(TWSE_X % (ym.replace('-', '') + '01'), tries=2))
+        except NetError as e:
+            print('  加權指數 %s 抓不到：%s' % (ym, e), flush=True)
+            time.sleep(TWSE_GAP)
+            continue
+        n = 0
+        for d, (o, h, l, c) in got_x.items():
+            if d in days and o is not None:
+                taiex_ohl[d] = (o, h, l)
+                if taiex.get(d) is None and c is not None:
+                    taiex[d] = c
+                n += 1
+        print('  加權指數 %s：%d 天開高低' % (ym, n), flush=True)
+        time.sleep(TWSE_GAP)
+
+    # 3. 法人與融資：最近 CHIP_BACK 個交易日裡還沒抓到的
     for s in trading[-CHIP_BACK:]:
         if stopped:
             break
@@ -730,7 +785,7 @@ def main():
     if stopped:
         print('::warning::%s' % stopped, flush=True)
 
-    # 3. 基本面與新聞：每次都抓，抓不到沿用舊的
+    # 4. 基本面與新聞：每次都抓，抓不到沿用舊的
     print('抓基本面…', flush=True)
     try:
         fund = fetch_fundamentals()
@@ -747,7 +802,7 @@ def main():
     except Exception as e:
         print('  新聞整個失敗：%s' % e, flush=True)
 
-    # 4. 寫檔
+    # 5. 寫檔
     dates = sorted(days)[-KEEP:]
     skip = sorted(d for d in skip if d >= (today - timedelta(days=LOOKBACK + 30)).isoformat())
     codes = [c for c in info if any(c in days[d] for d in dates)]
@@ -790,7 +845,10 @@ def main():
             os.remove(os.path.join('d', fn))
     out = {'dates': dates, 'updated': now.strftime('%Y-%m-%d %H:%M'), 'keep': KEEP, 'count': len(hist_q),
            'skip': skip, 'done': {d: sorted(done.get(d, {'q'})) for d in dates},
-           'idx': {'TAIEX': [clean(taiex.get(d)) for d in dates]},
+           'idx': {'TAIEX': [clean(taiex.get(d)) for d in dates],
+                   'TAIEXo': [clean(taiex_ohl[d][0]) if d in taiex_ohl else None for d in dates],
+                   'TAIEXh': [clean(taiex_ohl[d][1]) if d in taiex_ohl else None for d in dates],
+                   'TAIEXl': [clean(taiex_ohl[d][2]) if d in taiex_ohl else None for d in dates]},
            'chipDays': n20, 'q': hist_q}
     with open('history.json', 'w', encoding='utf-8') as fp:
         json.dump(out, fp, ensure_ascii=False, separators=(',', ':'))

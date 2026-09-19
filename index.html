@@ -158,7 +158,7 @@ footer{margin-top:22px;font-size:12px;color:var(--txt3);line-height:1.7}
     </div>
     <div class="tiles" id="mTiles"></div>
     <div class="chart"><canvas id="mChart" height="240"></canvas><div class="tip" id="mTip"></div></div>
-    <div class="legend"><span><i style="background:#fff"></i>加權指數</span><span><i style="background:var(--ma20)"></i>MA20 月線</span><span><i style="background:var(--ma60)"></i>MA60 季線</span></div>
+    <div class="legend"><span><i style="background:#ff5c6a"></i>加權指數 K 線（紅漲綠跌）</span><span><i style="background:var(--ma5)"></i>MA5</span><span><i style="background:var(--ma20)"></i>MA20 月線</span><span><i style="background:var(--ma60)"></i>MA60 季線</span></div>
     <ul class="reasons" id="mReasons"></ul>
     <div id="newsBox" class="hide"><h3>市場新聞</h3><ul class="news" id="news"></ul></div>
   </section>
@@ -623,7 +623,9 @@ function renderMarket() {
     }
   });
   const p20 = n20 ? above20 / n20 * 100 : null, p60 = n60 ? above60 / n60 * 100 : null;
-  const m = tx && tx.some(v => v != null) ? analyze(tx, null) : null;
+  const xo = H.idx && H.idx.TAIEXo, xh = H.idx && H.idx.TAIEXh, xl = H.idx && H.idx.TAIEXl;
+  const hasK = !!(xo && xo.some(v => v != null));
+  const m = tx && tx.some(v => v != null) ? analyze(tx, null, hasK ? { o: xo, h: xh, l: xl } : null) : null;
   const reasons = m ? m.reasons.map(r => ({ pts: r.pts, text: '加權指數：' + r.text, grp: r.grp })) : [];
   let score = m ? m.score : 0;
   const add = (pts, text, grp) => { score += pts; reasons.push({ pts, text, grp }); };
@@ -656,8 +658,8 @@ function renderMarket() {
   if (m) {
     const f = ffill(tx); const c = f.s; const off = f.off;
     const padN = a => new Array(off).fill(null).concat(a);
-    drawPrice($('#mChart'), $('#mTip'), { dates, name: '加權指數', close: padN(c),
-      lines: [{ name: 'MA20', color: '#3ce0d0', data: padN(sma(c, 20)) }, { name: 'MA60', color: '#a879ff', data: padN(sma(c, 60)) }] });
+    drawPrice($('#mChart'), $('#mTip'), { dates, name: '加權指數', close: tx, open: xo, high: xh, low: xl,
+      lines: [{ name: 'MA5', color: '#ffc233', data: padN(sma(c, 5)) }, { name: 'MA20', color: '#3ce0d0', data: padN(sma(c, 20)) }, { name: 'MA60', color: '#a879ff', data: padN(sma(c, 60)) }] });
   } else $('#mChart').parentElement.classList.add('hide');
 }
 const reasonLi = r => '<li><b class="' + (r.pts > 0 ? 'p' : r.pts < 0 ? 'n' : 'z') + '">' + (r.note ? '備註' : (r.pts > 0 ? '+' : '') + r.pts) + '</b><span>' + esc(r.text) + '</span></li>';
