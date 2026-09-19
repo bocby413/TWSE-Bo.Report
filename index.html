@@ -80,11 +80,13 @@ button,input,select{font:inherit;color:inherit}
 .g3{grid-template-columns:1.5fr 1fr}
 .sgrid{grid-template-columns:1.9fr 1fr}
 .two{grid-template-columns:1fr 1fr}
-.chart{position:relative;margin:4px 0}
-.chart canvas{width:100%;max-width:100%;display:block;border-radius:10px;background:var(--deep);touch-action:pan-y;cursor:crosshair;user-select:none}
-.chart{min-width:0;overflow:hidden}
+.chart{position:relative;margin:4px 0;min-width:0;overflow:hidden;display:flex;flex-direction:column}
+.chart canvas{width:100%;max-width:100%;display:block;border-radius:0 0 10px 10px;background:var(--deep);touch-action:pan-y;cursor:crosshair;user-select:none}
 .g>*{min-width:0}   /* 格子裡的欄位不能被畫布的實際像素寬撐大，不然每重畫一次就長大一點 */
-.tip{position:absolute;pointer-events:none;background:rgba(7,16,15,.96);border:1px solid var(--edge2);border-radius:8px;padding:6px 9px;font-size:12px;line-height:1.5;white-space:nowrap;display:none;z-index:2}
+/* 滑過的數字：固定在圖的最上面一列，不浮在 K 棒上面 */
+.tip{order:-1;background:var(--deep);border-bottom:1px solid var(--edge);border-radius:10px 10px 0 0;padding:5px 10px;font-size:12px;line-height:1.5;color:var(--txt2);min-height:28px;display:none}
+.tip b{color:var(--txt)}
+.tip .sep{color:var(--txt3);margin:0 6px}
 .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--txt3);margin-top:4px}
 .legend i{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin-right:4px}
 
@@ -601,13 +603,16 @@ function hover(cv, tipEl, N, xs, x0, x1, y0, y1, W, dpr, html, dotY) {
     const px = (ev.touches ? ev.touches[0].clientX : ev.clientX) - rect.left;
     let i = Math.round((px - x0) / (x1 - x0) * (N - 1)); i = Math.max(0, Math.min(N - 1, i));
     const t = html(i); if (!t) return;
-    tipEl.innerHTML = t; tipEl.style.display = 'block';
-    const tw = tipEl.offsetWidth;
-    tipEl.style.left = Math.min(Math.max(0, xs(i) - tw / 2), W - tw) + 'px'; tipEl.style.top = '8px';
+    put(t);
     cv._hover = i; redraw();
   };
+  /* 數字固定放在圖的最上面一列（像 TradingView），不跟著滑鼠跑、不遮住 K 棒；
+     沒有滑過的時候顯示最後一天 */
+  const put = t => { tipEl.innerHTML = t.replace(/<br>/g, '<span class="sep">·</span>'); tipEl.style.display = 'block'; };
+  const last = () => { for (let i = N - 1; i >= 0; i--) { const t = html(i); if (t) { put(t); return; } } tipEl.style.display = 'none'; };
+  last();
   cv.onmousemove = show; cv.ontouchstart = cv.ontouchmove = show;
-  cv.onmouseleave = cv.ontouchend = () => { tipEl.style.display = 'none'; cv._hover = null; redraw(); };
+  cv.onmouseleave = cv.ontouchend = () => { cv._hover = null; redraw(); last(); };
 }
 /* 價格圖：有開高低就畫 K 線，沒有就畫收盤線。o = {dates, name, close, open?, high?, low?, vol?, lines?} */
 function drawPrice(cv, tipEl, o) {
