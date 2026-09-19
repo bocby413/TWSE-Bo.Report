@@ -15,7 +15,7 @@
 寫出來的檔：
   history.json   全市場精簡版：每檔 120 天收盤與成交量、最近 20 天法人與融資融券、本益比殖利率、
                  用五年歷史算好的相似情境統計（ai），加權指數的開高低收。廣度、排行都算這個
-  d/XXX.json     依代號前三碼分片的詳細版：收盤與成交量五年、開高低一年、法人與融資 60 天、基本面，
+  d/XXX.json     依代號前三碼分片的詳細版：收盤、成交量、法人、融資融券五年，開高低一年，基本面，
                  點到那檔才載入。開高低與法人另外用 from 標起始位置，前面不塞 null
   meta.json      給這支腳本自己看的：全部日期、哪天做過什麼、假日、加權指數全長
   news.json      大盤新聞
@@ -29,7 +29,7 @@ KEEP = 1250             # 每檔收盤與成交量保留幾個交易日，約五
 KEEP_K = 250            # 開高低只留最近一年，畫 K 線夠了，五年份的檔案會太大
 HIST_KEEP = 120         # 首頁用的精簡版 history.json 只留這麼多，檔案才不會太大
 MIN_CODES = 800         # 少於這個檔數就當抓壞了，不覆蓋舊檔
-CHIP_BACK = 60          # 法人與融資往回補幾個交易日就好（每天要多抓四支，省一點）
+CHIP_BACK = 1250        # 法人與融資也補五年（每天要多抓四支，第一次要好幾個小時，從最近的往回補）
 LOOKBACK = 1900         # 往回補最多幾個「日曆日」，1250 個交易日大約是 1830 個日曆日
 TIME_BUDGET = 320 * 60  # 跑超過這個秒數就先收工寫檔，下次接著補（Actions 的 timeout 設 350 分；
                         # 只有第一次回補五年會跑這麼久，之後每天幾分鐘）
@@ -948,7 +948,7 @@ def main():
         ('m',  '證交所融資', lambda day: [u % day.strftime('%Y%m%d') for u in TWSE_M], parse_margin, TWSE_GAP),
         ('mO', '櫃買融資',   tpex_m_urls, parse_margin, TPEX_GAP),
     ]
-    for s in trading[-CHIP_BACK:]:
+    for s in reversed(trading[-CHIP_BACK:]):          # 從最近的往回補，近期的先有
         if stopped:
             break
         if s == today.isoformat() and not chip_ok_today:

@@ -1393,7 +1393,7 @@ async function openStock(code, go_) {
         '<div class="tiles">' + tiles.map(tile).join('') + '</div></div>' +
         (hasChip ? '<div class="card" style="margin-top:10px"><h2><i>◈</i>籌碼 <small>跟上面的 K 線同步：一起拖曳、縮放、對齊日期</small></h2>' +
           '<div class="chart"><canvas id="cChart" height="190"></canvas><div class="tip" id="cTip"></div></div>' +
-          '<div class="legend"><span><i style="background:var(--fi)"></i>外資</span><span><i style="background:var(--it)"></i>投信</span><span><i style="background:var(--dl)"></i>自營商</span><span><i style="background:var(--mg)"></i>融資餘額</span><span><i style="background:var(--ms)"></i>融券餘額</span><span>法人資料只有最近 60 個交易日</span></div>' +
+          '<div class="legend"><span><i style="background:var(--fi)"></i>外資</span><span><i style="background:var(--it)"></i>投信</span><span><i style="background:var(--dl)"></i>自營商</span><span><i style="background:var(--mg)"></i>融資餘額</span><span><i style="background:var(--ms)"></i>融券餘額</span><span id="chipSpan"></span></div>' +
           '<div class="tiles">' + chipTiles.map(tile).join('') + '</div>' + costHtml(s, a.c) + '</div>'
           : '<div class="card" style="margin-top:10px"><p class="hint">這檔還沒有法人與融資資料（排程要再跑一次才會補齊）</p></div>') +
       '</div>' +
@@ -1416,20 +1416,22 @@ async function openStock(code, go_) {
   if (hasChip) {
     const cc = makeKChart($('#cChart'), $('#cTip'), { dates, fi: s.fi, it: s.it, dl: s.dl, mg: s.mg, ms: s.ms }, RNG, 'chips');
     kc.link(cc);                                            // 跟 K 線同一段，一起拖、一起縮
+    const first = (s.fi || s.mg || []).findIndex(v => v != null);
+    $('#chipSpan').textContent = first >= 0 ? '法人與融資資料從 ' + dates[first] + ' 起，共 ' + (dates.length - first) + ' 個交易日' : '';
   }
 }
 
 /* 法人進場成本表 */
 function costHtml(s, price) {
-  const c60 = costEst(s, 60), c20 = costEst(s, 20);
-  const keys = Object.keys(c60); if (!keys.length) return '';
-  const rel = cost => cost ? '<span class="' + cls(price - cost) + '">' + pct((price / cost - 1) * 100) + '</span>' : '—';
-  const row = k => { const a = c60[k], b = c20[k] || {};
-    return '<tr><td><span style="color:' + ({ fi: 'var(--fi)', it: 'var(--it)', dl: 'var(--dl)' }[k]) + '">' + a.name + '</span></td>' +
-      '<td class="' + cls(a.net) + '">' + sgn(a.net, 0) + '</td><td>' + (a.buyCost ? fmt(a.buyCost) : '—') + '</td><td>' + rel(a.buyCost) + '</td>' +
-      '<td class="' + cls(b.net) + '">' + (b.net == null ? '—' : sgn(b.net, 0)) + '</td><td>' + (b.buyCost ? fmt(b.buyCost) : '—') + '</td><td>' + rel(b.buyCost) + '</td></tr>'; };
-  return '<h3>法人進場成本（估）</h3><table class="fan cost"><tr><th></th><th>60 日淨買賣超</th><th>60 日買超均價</th><th>現價相對</th><th>20 日淨買賣超</th><th>20 日買超均價</th><th>現價相對</th></tr>' + keys.map(row).join('') + '</table>' +
-    '<p class="hint" style="margin-top:4px">買超均價＝這段期間買超那些天的當日均價（開高低收平均）用買超張數加權；淨賣超的法人成本沒有意義，只看數字參考。K 線圖上的虛線是 60 日買超成本（只畫淨買超的）。</p>';
+  const wins = [[20, '20 日'], [60, '60 日'], [250, '一年']];
+  const est = wins.map(([w]) => costEst(s, w));
+  const keys = Object.keys(est[1]); if (!keys.length) return '';
+  const rel = cost => cost ? ' <small class="' + cls(price - cost) + '">' + pct((price / cost - 1) * 100) + '</small>' : '';
+  const row = k => '<tr><td><span style="color:' + ({ fi: 'var(--fi)', it: 'var(--it)', dl: 'var(--dl)' }[k]) + '">' + est[1][k].name + '</span></td>' +
+    est.map(e => { const a = e[k]; if (!a || a.days < 5) return '<td>—</td><td>—</td>';
+      return '<td class="' + cls(a.net) + '">' + sgn(a.net, 0) + '</td><td>' + (a.buyCost ? fmt(a.buyCost) + rel(a.buyCost) : '—') + '</td>'; }).join('') + '</tr>';
+  return '<h3>法人進場成本（估）</h3><table class="fan cost"><tr><th></th>' + wins.map(([, t]) => '<th>' + t + '淨買賣超</th><th>' + t + '買超均價</th>').join('') + '</tr>' + keys.map(row).join('') + '</table>' +
+    '<p class="hint" style="margin-top:4px">買超均價＝這段期間買超那些天的當日均價（開高低收平均，沒有開高低的用收盤）用買超張數加權，旁邊的小字是現價相對均價；淨賣超的法人成本沒有意義，只看數字參考。K 線圖上的虛線是 60 日買超成本（只畫淨買超的）。</p>';
 }
 
 /* 搜尋：代號開頭優先，再來是名稱包含 */

@@ -5,7 +5,7 @@
 ## 第一次設定
 
 1. **開啟 GitHub Pages**：Settings → Pages → Build and deployment → Source 選「Deploy from a branch」，Branch 選 `main`、資料夾 `/ (root)`，Save。
-2. **跑第一次資料**：Actions → 左邊選「收盤價歷史」→ Run workflow。第一次會往回補五年的收盤價、一年的開高低、60 個交易日的法人與融資，要好幾個小時；一次跑不完會分幾次接著補，跑完自動提交 `history.json`、`meta.json`、`d/`、`news.json`。
+2. **跑第一次資料**：Actions → 左邊選「收盤價歷史」→ Run workflow。第一次會往回補五年的收盤價、法人與融資融券、一年的開高低，要好幾個小時（法人與融資從最近的往回補）；一次跑不完會分幾次接著補，跑完自動提交 `history.json`、`meta.json`、`d/`、`news.json`。
 3. 之後每個交易日台北 15:05 與 17:40 會自動更新，不用再管。
 
 網址是 `https://<帳號>.github.io/<repo 名稱>/`。
@@ -13,7 +13,7 @@
 ## 檔案
 
 - `index.html`：整個網站，沒有外部函式庫。儀表板式版面：總覽首頁、個股分析、排行榜、法人動向、自選股、新聞快訊六個頁面，左側選單切換。
-- `scripts/fetch_history.py`：抓上市與上櫃每日全市場的開高低收、成交量、三大法人買賣超、融資融券餘額，加上本益比、殖利率、月營收、EPS 的快照與 Google 新聞 RSS。全市場精簡版（120 天）寫進 `history.json`，每檔詳細版（收盤五年、開高低一年、法人 60 天）依代號前三碼分片寫進 `d/`，進度記在 `meta.json`。
+- `scripts/fetch_history.py`：抓上市與上櫃每日全市場的開高低收、成交量、三大法人買賣超、融資融券餘額，加上本益比、殖利率、月營收、EPS 的快照與 Google 新聞 RSS。全市場精簡版（120 天）寫進 `history.json`，每檔詳細版（收盤、法人、融資融券五年，開高低一年）依代號前三碼分片寫進 `d/`，進度記在 `meta.json`。
 - `.github/workflows/history.yml`：排程。
 
 ## AI 建議與粗估走勢
