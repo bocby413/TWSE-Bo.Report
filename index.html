@@ -81,7 +81,9 @@ button,input,select{font:inherit;color:inherit}
 .sgrid{grid-template-columns:1.9fr 1fr}
 .two{grid-template-columns:1fr 1fr}
 .chart{position:relative;margin:4px 0}
-.chart canvas{width:100%;display:block;border-radius:10px;background:var(--deep)}
+.chart canvas{width:100%;max-width:100%;display:block;border-radius:10px;background:var(--deep)}
+.chart{min-width:0;overflow:hidden}
+.g>*{min-width:0}   /* 格子裡的欄位不能被畫布的實際像素寬撐大，不然每重畫一次就長大一點 */
 .tip{position:absolute;pointer-events:none;background:rgba(7,16,15,.96);border:1px solid var(--edge2);border-radius:8px;padding:6px 9px;font-size:12px;line-height:1.5;white-space:nowrap;display:none;z-index:2}
 .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--txt3);margin-top:4px}
 .legend i{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin-right:4px}
@@ -537,7 +539,8 @@ function label(score, strong, lean) {
 /* ── 畫圖 ── 純 canvas */
 function setup(cv) {
   const dpr = window.devicePixelRatio || 1;
-  const W = cv.clientWidth || cv.parentElement.clientWidth || 600, Hh = +cv.getAttribute('height') || 240;
+  // 寬度以外框為準，不看畫布自己：畫布的實際像素是 CSS 寬的 dpr 倍，用它量會越畫越大
+  const W = cv.parentElement.clientWidth || cv.clientWidth || 600, Hh = +cv.getAttribute('height') || 240;
   cv.width = W * dpr; cv.height = Hh * dpr; cv.style.height = Hh + 'px';
   const ctx = cv.getContext('2d'); ctx.scale(dpr, dpr);
   return { ctx, W, Hh, dpr };
