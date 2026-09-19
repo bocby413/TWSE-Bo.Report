@@ -181,6 +181,7 @@ h3{font-size:12.5px;color:var(--txt2);font-weight:600;margin:10px 0 4px}
 .ai .why{list-style:none;display:grid;gap:3px;font-size:12.5px;color:var(--txt2)}
 .ai .why li:before{content:'·';color:var(--accent);margin-right:6px}
 table.fan{margin-top:4px} table.fan td:first-child{color:var(--txt3);font-size:12px} table.fan td{padding:5px 4px;font-size:12.5px}
+table.cost td:first-child{font-weight:600;font-size:12.5px}
 .hint{font-size:12px;color:var(--txt3)}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 8px}
 .chip{background:var(--panel2);border:1px solid var(--edge);border-radius:999px;padding:3px 11px;font-size:12.5px;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
@@ -615,22 +616,24 @@ function hover(cv, tipEl, N, xs, x0, x1, y0, y1, W, dpr, html, dotY) {
     if (y != null) { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(xs(i) * dpr, y * dpr, 3.5 * dpr, 0, 7); ctx.fill(); }
     ctx.restore();
   };
+  const showAt = i => { const t = html(i); if (!t) return; put(t); cv._hover = i; redraw(); };
   const show = ev => {
     if (cv._drag) return;                                    /* 拖曳中不要跳十字線 */
     const rect = cv.getBoundingClientRect();
     const px = (ev.touches ? ev.touches[0].clientX : ev.clientX) - rect.left;
     let i = Math.round((px - x0) / (x1 - x0) * (N - 1)); i = Math.max(0, Math.min(N - 1, i));
-    const t = html(i); if (!t) return;
-    put(t);
-    cv._hover = i; redraw();
+    showAt(i);
+    (cv._peers || []).forEach(p => p._showAt && p._showAt(i));   /* 連動的圖一起顯示同一天 */
   };
+  cv._showAt = showAt;
   /* 數字固定放在圖的最上面一列（像 TradingView），不跟著滑鼠跑、不遮住 K 棒；
      沒有滑過的時候顯示最後一天 */
   const put = t => { tipEl.innerHTML = t; tipEl.style.display = 'block'; };
   const last = () => { for (let i = N - 1; i >= 0; i--) { const t = html(i); if (t) { put(t); return; } } tipEl.style.display = 'none'; };
   last();
+  cv._leave = () => { cv._hover = null; redraw(); last(); };
   cv.onmousemove = show; cv.ontouchstart = cv.ontouchmove = show;
-  cv.onmouseleave = cv.ontouchend = () => { cv._hover = null; redraw(); last(); };
+  cv.onmouseleave = cv.ontouchend = () => { cv._leave(); (cv._peers || []).forEach(p => p._leave && p._leave()); };
 }
 /* 價格圖：有開高低就畫 K 線，沒有就畫收盤線。o = {dates, name, close, open?, high?, low?, vol?, lines?} */
 function drawPrice(cv, tipEl, o) {
@@ -644,6 +647,7 @@ function drawPrice(cv, tipEl, o) {
   const all = [];
   const push = a => a && a.forEach(v => v != null && all.push(v));
   push(o.close); push(o.high); push(o.low); (o.lines || []).forEach(l => push(l.data));
+  (o.hlines || []).forEach(h => { if (h.y != null && o.close[N - 1] && Math.abs(h.y / o.close[N - 1] - 1) < .15) all.push(h.y); });   /* 成本線離現價不遠就納入刻度 */
   if (!all.length) return;
   let lo = Math.min(...all), hi = Math.max(...all);
   if (hi === lo) { hi += 1; lo -= 1; }
@@ -666,6 +670,12 @@ function drawPrice(cv, tipEl, o) {
     });
   }
   (o.lines || []).forEach(l => line(ctx, l.data, xs, ys, l.color, 1.5));
+  /* 水平線（法人成本）：虛線＋右邊小標籤；在畫面價格範圍外的就不畫 */
+  (o.hlines || []).forEach(h => {
+    if (h.y == null || h.y < lo || h.y > hi) return;
+    ctx.strokeStyle = h.color; ctx.lineWidth = 1; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(x0, ys(h.y)); ctx.lineTo(x1, ys(h.y)); ctx.stroke(); ctx.setLineDash([]);
+    ctx.font = '10px system-ui,sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'bottom'; ctx.fillStyle = h.color; ctx.fillText(h.label + ' ' + fmt(h.y), x1 - 4, ys(h.y) - 2);
+  });
   if (hasK) {
     const bw = Math.max(2, slot * .65);
     for (let i = 0; i < N; i++) {
@@ -761,15 +771,19 @@ function sparkline(cv, data) {
 
 /* ── 可拖拉、可縮放的價格圖 ── 像 TradingView 那樣：滾輪以游標為中心縮放、按住拖曳平移、
    手機單指拖曳、雙指縮放、雙擊回到預設範圍。資料整份給它，它自己切出正在看的那段交給 drawPrice */
-function makeKChart(cv, tipEl, full, span) {
-  const N = full.close.length;
+function makeKChart(cv, tipEl, full, span, kind) {
+  const N = full.dates.length;
   const st = { a: Math.max(0, N - Math.min(span, N)), b: N };
-  const render = () => {
+  const peers = [];
+  const draw = () => {
     const cut = arr => arr ? arr.slice(st.a, st.b) : null;
-    drawPrice(cv, tipEl, { dates: cut(full.dates), name: full.name, close: cut(full.close), open: cut(full.open), high: cut(full.high), low: cut(full.low), vol: cut(full.vol),
-      lines: (full.lines || []).map(l => ({ name: l.name, color: l.color, data: cut(l.data) })) });
+    if (kind === 'chips') drawChips(cv, tipEl, { dates: cut(full.dates), fi: cut(full.fi), it: cut(full.it), dl: cut(full.dl), mg: cut(full.mg), ms: cut(full.ms), unit: full.unit });
+    else drawPrice(cv, tipEl, { dates: cut(full.dates), name: full.name, close: cut(full.close), open: cut(full.open), high: cut(full.high), low: cut(full.low), vol: cut(full.vol),
+      lines: (full.lines || []).map(l => ({ name: l.name, color: l.color, data: cut(l.data) })), hlines: full.hlines });
     cv._view = [st.a, st.b];
   };
+  /* 連動：自己畫完，跟著畫同一段的其他圖（籌碼圖跟 K 線同步） */
+  const render = (propagate = true) => { draw(); if (propagate) peers.forEach(p => p.follow(st)); };
   const clamp = (a, len) => { len = Math.max(15, Math.min(N, Math.round(len))); a = Math.max(0, Math.min(N - len, Math.round(a))); st.a = a; st.b = a + len; };
   const barW = () => (cv.clientWidth - 64) / Math.max(1, st.b - st.a);          // drawPrice 左右留白約 64px
   const zoom = (factor, px) => {                                                    // px 是游標在畫布上的 x，縮放時那一根不動
@@ -801,7 +815,29 @@ function makeKChart(cv, tipEl, full, span) {
   }, { passive: false });
   cv.addEventListener('touchend', () => { touch = null; cv._drag = false; });
   render();
-  return { render, set: n => { clamp(N - Math.min(n, N), Math.min(n, N)); render(); }, st };
+  const api = { render, set: n => { clamp(N - Math.min(n, N), Math.min(n, N)); render(); }, st, cv,
+    follow: s2 => { st.a = s2.a; st.b = s2.b; render(false); },
+    link: other => { peers.push(other); other.peersPush(api); cv._peers = (cv._peers || []).concat([other.cv]); other.cv._peers = (other.cv._peers || []).concat([cv]); },
+    peersPush: p => peers.push(p) };
+  return api;
+}
+/* 法人進場成本：買超那些天用「當天均價（開高低收平均，沒有就收盤）× 買超張數」加權平均。
+   同時算賣超均價跟這段期間的淨買賣超，淨賣超的話成本就沒意義 */
+function costEst(s, W) {
+  const N = s.c.length, from = Math.max(0, N - W), out = {};
+  [['fi', '外資'], ['it', '投信'], ['dl', '自營商']].forEach(([k, name]) => {
+    const arr = s[k]; if (!arr) return;
+    let bl = 0, ba = 0, sl = 0, sa = 0, days = 0;
+    for (let i = from; i < N; i++) {
+      const lots = arr[i]; if (lots == null || s.c[i] == null) continue;
+      const tp = s.o && s.o[i] != null && s.h && s.h[i] != null && s.l && s.l[i] != null ? (s.o[i] + s.h[i] + s.l[i] + s.c[i]) / 4 : s.c[i];
+      days++;
+      if (lots > 0) { bl += lots; ba += lots * tp; } else if (lots < 0) { sl -= lots; sa -= lots * tp; }
+    }
+    if (!days) return;
+    out[k] = { name, days, net: bl - sl, buyLots: bl, buyCost: bl ? ba / bl : null, sellLots: sl, sellAvg: sl ? sa / sl : null };
+  });
+  return out;
 }
 
 /* ── 大盤：先算，再各處畫 ── */
@@ -1352,9 +1388,10 @@ async function openStock(code, go_) {
       '<div><div class="card"><h2><i>▲</i>K 線 <small>滾輪縮放、拖曳平移、雙擊還原</small><span class="tabs mini" id="rng">' + [[63, '3 月'], [126, '6 月'], [250, '1 年'], [9999, '5 年']].map(([n, t]) => '<button data-n="' + n + '"' + (n === RNG ? ' class="on"' : '') + '>' + t + '</button>').join('') + '</span></h2><div class="chart"><canvas id="sChart" height="300"></canvas><div class="tip" id="sTip"></div></div>' +
         '<div class="legend"><span><i style="background:#ff5a68"></i>K 線（紅漲綠跌）</span><span><i style="background:var(--ma5)"></i>MA5</span><span><i style="background:var(--ma20)"></i>MA20</span><span><i style="background:var(--ma60)"></i>MA60</span></div>' +
         '<div class="tiles">' + tiles.map(tile).join('') + '</div></div>' +
-        (hasChip ? '<div class="card" style="margin-top:10px"><h2><i>◈</i>籌碼 <small>法人買賣超（張）＋融資融券餘額</small></h2><div class="tiles">' + chipTiles.map(tile).join('') + '</div>' +
+        (hasChip ? '<div class="card" style="margin-top:10px"><h2><i>◈</i>籌碼 <small>跟上面的 K 線同步：一起拖曳、縮放、對齊日期</small></h2>' +
           '<div class="chart"><canvas id="cChart" height="190"></canvas><div class="tip" id="cTip"></div></div>' +
-          '<div class="legend"><span><i style="background:var(--fi)"></i>外資</span><span><i style="background:var(--it)"></i>投信</span><span><i style="background:var(--dl)"></i>自營商</span><span><i style="background:var(--mg)"></i>融資餘額</span><span><i style="background:var(--ms)"></i>融券餘額</span></div></div>'
+          '<div class="legend"><span><i style="background:var(--fi)"></i>外資</span><span><i style="background:var(--it)"></i>投信</span><span><i style="background:var(--dl)"></i>自營商</span><span><i style="background:var(--mg)"></i>融資餘額</span><span><i style="background:var(--ms)"></i>融券餘額</span><span>法人資料只有最近 60 個交易日</span></div>' +
+          '<div class="tiles">' + chipTiles.map(tile).join('') + '</div>' + costHtml(s, a.c) + '</div>'
           : '<div class="card" style="margin-top:10px"><p class="hint">這檔還沒有法人與融資資料（排程要再跑一次才會補齊）</p></div>') +
       '</div>' +
       '<div>' + aiHtml(a, an, a.c) + '<div class="card" style="margin-top:10px"><h2><i>✓</i>判斷依據</h2><ul class="reasons">' + reasonsHtml(a.reasons) + '</ul></div>' +
@@ -1366,14 +1403,30 @@ async function openStock(code, go_) {
     '</div>';
   $('#star').onclick = () => { if (WATCH.includes(code)) WATCH = WATCH.filter(c => c !== code); else WATCH.push(code); saveWatch(); openStock(code); renderWatchHome(); };
   const f = ffill(s.c); const c = f.s; const off = f.off; const padN = arr => new Array(off).fill(null).concat(arr);
-  const kc = makeKChart($('#sChart'), $('#sTip'), { dates, name: '收盤', close: s.c, open: s.o, high: s.h, low: s.l, vol: s.v,
+  // 60 日買超成本畫在 K 線上（只畫這段期間是淨買超的法人）
+  const ce = hasChip ? costEst(s, 60) : {};
+  const hlines = [['fi', '#fb923c', '外資成本'], ['it', '#2dd4bf', '投信成本'], ['dl', '#a78bfa', '自營成本']].filter(([k]) => ce[k] && ce[k].net > 0 && ce[k].buyCost).map(([k, color, label]) => ({ y: ce[k].buyCost, color, label }));
+  const kc = makeKChart($('#sChart'), $('#sTip'), { dates, name: '收盤', close: s.c, open: s.o, high: s.h, low: s.l, vol: s.v, hlines,
     lines: [{ name: 'MA5', color: '#f5c542', data: padN(sma(c, 5)) }, { name: 'MA20', color: '#2dd4bf', data: padN(sma(c, 20)) }, { name: 'MA60', color: '#a78bfa', data: padN(sma(c, 60)) }] }, RNG);
   $('#rng').onclick = e => { const b = e.target.closest('button'); if (!b) return; RNG = +b.dataset.n; $('#rng').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); kc.set(RNG); };
   if (an && an.h && $('#fan')) drawFan($('#fan'), a.c, an);
   if (hasChip) {
-    const n = Math.min(60, dates.length), cut = arr => arr ? arr.slice(-n) : null;   // 籌碼只看最近 60 天，太長會擠成一團
-    drawChips($('#cChart'), $('#cTip'), { dates: dates.slice(-n), fi: cut(s.fi), it: cut(s.it), dl: cut(s.dl), mg: cut(s.mg), ms: cut(s.ms) });
+    const cc = makeKChart($('#cChart'), $('#cTip'), { dates, fi: s.fi, it: s.it, dl: s.dl, mg: s.mg, ms: s.ms }, RNG, 'chips');
+    kc.link(cc);                                            // 跟 K 線同一段，一起拖、一起縮
   }
+}
+
+/* 法人進場成本表 */
+function costHtml(s, price) {
+  const c60 = costEst(s, 60), c20 = costEst(s, 20);
+  const keys = Object.keys(c60); if (!keys.length) return '';
+  const rel = cost => cost ? '<span class="' + cls(price - cost) + '">' + pct((price / cost - 1) * 100) + '</span>' : '—';
+  const row = k => { const a = c60[k], b = c20[k] || {};
+    return '<tr><td><span style="color:' + ({ fi: 'var(--fi)', it: 'var(--it)', dl: 'var(--dl)' }[k]) + '">' + a.name + '</span></td>' +
+      '<td class="' + cls(a.net) + '">' + sgn(a.net, 0) + '</td><td>' + (a.buyCost ? fmt(a.buyCost) : '—') + '</td><td>' + rel(a.buyCost) + '</td>' +
+      '<td class="' + cls(b.net) + '">' + (b.net == null ? '—' : sgn(b.net, 0)) + '</td><td>' + (b.buyCost ? fmt(b.buyCost) : '—') + '</td><td>' + rel(b.buyCost) + '</td></tr>'; };
+  return '<h3>法人進場成本（估）</h3><table class="fan cost"><tr><th></th><th>60 日淨買賣超</th><th>60 日買超均價</th><th>現價相對</th><th>20 日淨買賣超</th><th>20 日買超均價</th><th>現價相對</th></tr>' + keys.map(row).join('') + '</table>' +
+    '<p class="hint" style="margin-top:4px">買超均價＝這段期間買超那些天的當日均價（開高低收平均）用買超張數加權；淨賣超的法人成本沒有意義，只看數字參考。K 線圖上的虛線是 60 日買超成本（只畫淨買超的）。</p>';
 }
 
 /* 搜尋：代號開頭優先，再來是名稱包含 */
