@@ -8,7 +8,7 @@
 2. **跑第一次資料**：Actions → 左邊選「收盤價歷史」→ Run workflow。第一次會往回補五年的收盤價、法人與融資融券、一年的開高低，要好幾個小時（法人與融資從最近的往回補）；一次跑不完會分幾次接著補，跑完自動提交 `history.json`、`meta.json`、`d/`、`news.json`。
 3. 之後每個交易日台北 15:05 與 17:40 會自動更新，不用再管。
 
-網址是 `https://<帳號>.github.io/<repo 名稱>/`。
+網址是 https://bocby413.github.io/TWSE-Bo.Report/ （repo 改名網址就跟著變）。
 
 ## 檔案
 
