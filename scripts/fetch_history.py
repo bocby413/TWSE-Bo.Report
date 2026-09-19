@@ -369,9 +369,15 @@ def parse_insti(d, positional=None):
 
 
 def tpex_i_urls(day):
+    """櫃買新版網站的路徑我沒辦法在這裡實測，多列幾種寫法逐一試；
+    全部都沒資料的時候 try_urls 會把回應的長相印進 log，看了再修"""
     ad = day.strftime('%Y/%m/%d')
+    base = 'https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade'
     return [
-        ('https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade?type=Daily&sect=EW&date=%s&response=json' % ad, None),
+        (base + '?type=Daily&sect=EW&date=%s&id=&response=json' % ad, None),
+        (base + '?type=Daily&sect=AL&date=%s&id=&response=json' % ad, None),
+        (base + '?type=Daily&sect=EW&date=%s&response=json' % ad, None),
+        ('https://www.tpex.org.tw/www/zh-tw/insti/dailyTradeSummary?type=Daily&sect=EW&date=%s&response=json' % ad, None),
         ('https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php'
          '?l=zh-tw&se=EW&t=D&d=%s&o=json' % roc(day), (0, 10, 13, 22)),
     ]
@@ -428,11 +434,32 @@ def tpex_m_urls(day):
     ]
 
 
-def try_urls(urls, parse, gap, min_rows=1):
+def shape(d, n=400):
+    """把回應的長相濃縮成一行：頂層鍵、每張表的欄名跟第一列。給 log 看的"""
+    try:
+        if isinstance(d, dict):
+            parts = ['keys=%s' % list(d.keys())[:8]]
+            for k in ('stat', 'date', 'message', 'msg'):
+                if k in d:
+                    parts.append('%s=%s' % (k, str(d[k])[:60]))
+            for fields, data in tables_of(d)[:3]:
+                parts.append('fields=%s first=%s n=%d' % (fields[:12], (data[0] if data else None), len(data)))
+            return ' | '.join(parts)[:n]
+        return ('%s %s' % (type(d).__name__, str(d)[:n]))
+    except Exception as e:
+        return 'shape 失敗 %s' % e
+
+
+DIAG = {}                                          # 每種來源最多印幾次診斷
+
+
+def try_urls(urls, parse, gap, min_rows=1, diag=None):
     """逐一試來源，回 (result, reached)。reached=False 表示每個都連不上。
-    result 是 parse 的回傳（dict，或 (dict, 其他) 的 tuple）"""
+    result 是 parse 的回傳（dict，或 (dict, 其他) 的 tuple）。
+    diag 給個名字的話，全部來源都連得上卻沒資料時，把每個回應的長相印出來（每個名字最多兩次）"""
     reached = False
     best = None
+    seen = []
     for item in urls:
         url, extra = item if isinstance(item, tuple) else (item, None)
         try:
@@ -445,11 +472,16 @@ def try_urls(urls, parse, gap, min_rows=1):
         rows = r[0] if isinstance(r, tuple) else r
         if len(rows) >= min_rows:
             return r, True
+        seen.append((url, shape(d)))
         if best is None:
             best = r
         time.sleep(gap)
     if best is None:
         best = parse({}, None)
+    if diag and reached and DIAG.get(diag, 0) < 2:
+        DIAG[diag] = DIAG.get(diag, 0) + 1
+        for url, sh in seen:
+            print('  [診斷 %s] %s\n      → %s' % (diag, url, sh), flush=True)
     return best, reached
 
 
@@ -640,6 +672,12 @@ def load_store():
     done = {d: set(v) for d, v in (meta.get('done') or {}).items()}
     for d in dates:
         done.setdefault(d, {'q'})
+    # 櫃買的法人／融資各自有記號（iO、mO）。舊檔沒有這兩個記號，就看資料裡有沒有來補
+    for d in dates:
+        if 'iO' not in done[d] and any(r.get('fi') is not None for c, r in days[d].items() if info.get(c, {}).get('m') == 'tpex'):
+            done[d].add('iO')
+        if 'mO' not in done[d] and any(r.get('mg') is not None for c, r in days[d].items() if info.get(c, {}).get('m') == 'tpex'):
+            done[d].add('mO')
     return days, info, taiex, taiex_ohl, set(meta.get('skip') or []), done
 
 
@@ -736,51 +774,50 @@ def main():
         print('  加權指數 %s：%d 天開高低' % (ym, n), flush=True)
         time.sleep(TWSE_GAP)
 
-    # 3. 法人與融資：最近 CHIP_BACK 個交易日裡還沒抓到的
+    # 3. 法人與融資：最近 CHIP_BACK 個交易日裡還沒抓到的。
+    #    證交所、櫃買各自記錄（i／iO、m／mO），一邊掛了不影響另一邊
+    tasks = [
+        ('i',  '證交所法人', lambda day: [u % day.strftime('%Y%m%d') for u in TWSE_I], parse_insti, TWSE_GAP),
+        ('iO', '櫃買法人',   tpex_i_urls, parse_insti, TPEX_GAP),
+        ('m',  '證交所融資', lambda day: [u % day.strftime('%Y%m%d') for u in TWSE_M], parse_margin, TWSE_GAP),
+        ('mO', '櫃買融資',   tpex_m_urls, parse_margin, TPEX_GAP),
+    ]
     for s in trading[-CHIP_BACK:]:
         if stopped:
             break
-        need = [k for k in ('i', 'm') if k not in done.get(s, set())]
-        if not need or (s == today.isoformat() and not chip_ok_today):
+        if s == today.isoformat() and not chip_ok_today:
             continue
         day = datetime.strptime(s, '%Y-%m-%d').date()
-        for kind in need:
+        for key, name, urls, parse, gap in tasks:
+            if key in done.setdefault(s, {'q'}):
+                continue
             if tick():
                 stopped = '時間到了，先寫檔，下次接著補'
                 break
-            if kind == 'i':
-                a, r1 = try_urls([u % day.strftime('%Y%m%d') for u in TWSE_I], parse_insti, TWSE_GAP)
-                time.sleep(TPEX_GAP)
-                b, r2 = try_urls(tpex_i_urls(day), parse_insti, TPEX_GAP)
-            else:
-                a, r1 = try_urls([u % day.strftime('%Y%m%d') for u in TWSE_M], parse_margin, TWSE_GAP)
-                time.sleep(TPEX_GAP)
-                b, r2 = try_urls(tpex_m_urls(day), parse_margin, TPEX_GAP)
-            if not (r1 and r2):
-                stopped = '%s %s連不上' % (s, kind_name(kind))
+            rows, reached = try_urls(urls(day), parse, gap, diag=name)
+            if not reached:
+                stopped = '%s %s連不上' % (s, name)
                 break
-            if not a and not b:
+            if not rows:
                 if day < today:
-                    done[s].add(kind)                  # 過去的日子沒這份資料，就當沒有，不再問
+                    done[s].add(key)                   # 過去的日子沒這份資料，就當沒有，不再問
                 else:
-                    print('  %s 今天的%s還沒出來' % (s, kind_name(kind)), flush=True)
-                time.sleep(TWSE_GAP)
+                    print('  %s 今天的%s還沒出來' % (s, name), flush=True)
+                time.sleep(gap)
                 continue
-            merged = dict(a)
-            merged.update(b)
             n = 0
-            for code, vals in merged.items():
+            for code, vals in rows.items():
                 row = days[s].get(code)
                 if row is None:
                     continue
-                if kind == 'i':
+                if key[0] == 'i':
                     row['fi'], row['it'], row['dl'] = lots(vals[0]), lots(vals[1]), lots(vals[2])
                 else:
                     row['mg'], row['ms'] = clean(vals[0], 0), clean(vals[1], 0)
                 n += 1
-            done[s].add(kind)
-            print('  %s %s：上市 %d、上櫃 %d，對上 %d 檔' % (s, kind_name(kind), len(a), len(b), n), flush=True)
-            time.sleep(TWSE_GAP)
+            done[s].add(key)
+            print('  %s %s：%d 檔，對上 %d 檔' % (s, name, len(rows), n), flush=True)
+            time.sleep(gap)
 
     if stopped:
         print('::warning::%s' % stopped, flush=True)
@@ -856,7 +893,7 @@ def main():
         with open('news.json', 'w', encoding='utf-8') as fp:
             json.dump({'updated': now.strftime('%Y-%m-%d %H:%M'), 'items': news}, fp,
                       ensure_ascii=False, separators=(',', ':'))
-    chip_have = sum(1 for d in dates if 'i' in done.get(d, set()))
+    chip_have = sum(1 for d in dates if 'i' in done.get(d, set()) and 'iO' in done.get(d, set()))
     print('寫入 history.json（%d 個交易日 %s ～ %s，%d 檔，這次新增 %d 天，法人有 %d 天）與 d/ %d 個分片'
           % (len(dates), dates[0] if dates else '-', dates[-1] if dates else '-', len(hist_q), got, chip_have, len(shards)))
 
