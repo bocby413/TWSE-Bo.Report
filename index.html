@@ -84,9 +84,9 @@ button,input,select{font:inherit;color:inherit}
 .chart canvas{width:100%;max-width:100%;display:block;border-radius:0 0 10px 10px;background:var(--deep);touch-action:pan-y;cursor:crosshair;user-select:none}
 .g>*{min-width:0}   /* 格子裡的欄位不能被畫布的實際像素寬撐大，不然每重畫一次就長大一點 */
 /* 滑過的數字：固定在圖的最上面一列，不浮在 K 棒上面 */
-.tip{order:-1;background:var(--deep);border-bottom:1px solid var(--edge);border-radius:10px 10px 0 0;padding:5px 10px;font-size:12px;line-height:1.5;color:var(--txt2);min-height:28px;display:none}
+.tip{order:-1;background:var(--deep);border-bottom:1px solid var(--edge);border-radius:10px 10px 0 0;padding:5px 10px;font-size:12.5px;line-height:1.5;color:var(--txt2);min-height:46px;display:none;font-variant-numeric:tabular-nums}
 .tip b{color:var(--txt)}
-.tip .sep{color:var(--txt3);margin:0 6px}
+.tip .sep{color:var(--txt3);margin:0 5px}
 .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--txt3);margin-top:4px}
 .legend i{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin-right:4px}
 
@@ -608,7 +608,7 @@ function hover(cv, tipEl, N, xs, x0, x1, y0, y1, W, dpr, html, dotY) {
   };
   /* 數字固定放在圖的最上面一列（像 TradingView），不跟著滑鼠跑、不遮住 K 棒；
      沒有滑過的時候顯示最後一天 */
-  const put = t => { tipEl.innerHTML = t.replace(/<br>/g, '<span class="sep">·</span>'); tipEl.style.display = 'block'; };
+  const put = t => { tipEl.innerHTML = t; tipEl.style.display = 'block'; };
   const last = () => { for (let i = N - 1; i >= 0; i--) { const t = html(i); if (t) { put(t); return; } } tipEl.style.display = 'none'; };
   last();
   cv.onmousemove = show; cv.ontouchstart = cv.ontouchmove = show;
@@ -671,11 +671,14 @@ function drawPrice(cv, tipEl, o) {
   hover(cv, tipEl, N, xs, x0, x1, y0, y1 + volH, W, dpr, i => {
     const v = o.close[i]; if (v == null) return '';
     const p = i > 0 && o.close[i - 1] != null ? (v / o.close[i - 1] - 1) * 100 : null;
-    let t = '<b>' + o.dates[i] + '</b><br>';
-    if (hasK && o.open[i] != null) t += '開 ' + fmt(o.open[i]) + ' 高 ' + fmt(o.high[i]) + ' 低 ' + fmt(o.low[i]) + '<br>';
-    t += o.name + ' ' + fmt(v) + (p == null ? '' : ' <span class="' + cls(p) + '">' + pct(p) + '</span>');
-    (o.lines || []).forEach(l => { if (l.data[i] != null) t += '<br><span style="color:' + l.color + '">' + l.name + '</span> ' + fmt(l.data[i]); });
-    if (hasVol && o.vol[i]) t += '<br>成交 ' + fmt(o.vol[i], 0) + ' 張';
+    /* 兩列：第一列 日期·開 高 低 收 漲跌%，第二列 均線·成交 */
+    const S = '<span class="sep">·</span>';
+    let t = '<b>' + o.dates[i] + '</b>' + S;
+    if (hasK && o.open[i] != null) t += '開 ' + fmt(o.open[i]) + ' 高 ' + fmt(o.high[i]) + ' 低 ' + fmt(o.low[i]) + ' ';
+    t += '收 ' + fmt(v) + (p == null ? '' : ' <span class="' + cls(p) + '">' + pct(p) + '</span>');
+    const l2 = (o.lines || []).filter(l => l.data[i] != null).map(l => '<span style="color:' + l.color + '">' + l.name + '</span> ' + fmt(l.data[i]));
+    if (hasVol && o.vol[i]) l2.push('成交 ' + fmt(o.vol[i], 0) + ' 張');
+    if (l2.length) t += '<br>' + l2.join(S);
     return t;
   }, i => o.close[i] == null ? null : ys(o.close[i]));
 }
@@ -715,13 +718,13 @@ function drawChips(cv, tipEl, o) {
     }
   }
   hover(cv, tipEl, N, xs, x0, x1, y0, Hh - padB, W, dpr, i => {
-    let t = '<b>' + o.dates[i] + '</b>';
-    const u = o.unit || '張';
-    const row = (nm, v, color) => v != null ? '<br><span style="color:' + color + '">' + nm + '</span> ' + sgn(v, o.unit ? 1 : 0) + ' ' + u : '';
-    t += row('外資', o.fi && o.fi[i], '#fb923c') + row('投信', o.it && o.it[i], '#2dd4bf') + row('自營商', o.dl && o.dl[i], '#a78bfa');
-    if (o.mg && o.mg[i] != null) t += '<br><span style="color:#f5c542">融資餘額</span> ' + fmt(o.mg[i], 0) + ' 張';
-    if (o.ms && o.ms[i] != null) t += '<br><span style="color:#86efac">融券餘額</span> ' + fmt(o.ms[i], 0) + ' 張';
-    return t;
+    const S = '<span class="sep">·</span>', u = o.unit || '張';
+    const row = (nm, v, color) => v != null ? '<span style="color:' + color + '">' + nm + '</span> ' + sgn(v, o.unit ? 1 : 0) + ' ' + u : null;
+    const l1 = [row('外資', o.fi && o.fi[i], '#fb923c'), row('投信', o.it && o.it[i], '#2dd4bf'), row('自營商', o.dl && o.dl[i], '#a78bfa')].filter(Boolean);
+    const l2 = [];
+    if (o.mg && o.mg[i] != null) l2.push('<span style="color:#f5c542">融資餘額</span> ' + fmt(o.mg[i], 0) + ' 張');
+    if (o.ms && o.ms[i] != null) l2.push('<span style="color:#86efac">融券餘額</span> ' + fmt(o.ms[i], 0) + ' 張');
+    return '<b>' + o.dates[i] + '</b>' + (l1.length ? S + l1.join(S) : '') + (l2.length ? '<br>' + l2.join(S) : '');
   }, null);
 }
 function sparkline(cv, data) {
