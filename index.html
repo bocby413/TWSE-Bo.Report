@@ -671,10 +671,13 @@ function drawPrice(cv, tipEl, o) {
   }
   (o.lines || []).forEach(l => line(ctx, l.data, xs, ys, l.color, 1.5));
   /* 水平線（法人成本）：虛線＋右邊小標籤；在畫面價格範圍外的就不畫 */
-  (o.hlines || []).forEach(h => {
-    if (h.y == null || h.y < lo || h.y > hi) return;
-    ctx.strokeStyle = h.color; ctx.lineWidth = 1; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(x0, ys(h.y)); ctx.lineTo(x1, ys(h.y)); ctx.stroke(); ctx.setLineDash([]);
-    ctx.font = '10px system-ui,sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'bottom'; ctx.fillStyle = h.color; ctx.fillText(h.label + ' ' + fmt(h.y), x1 - 4, ys(h.y) - 2);
+  const used = [];                                             /* 標籤放過的 y，太近的往上下錯開 */
+  (o.hlines || []).filter(h => h.y != null && h.y >= lo && h.y <= hi).sort((a, b) => a.y - b.y).forEach(h => {
+    const y = ys(h.y);
+    ctx.strokeStyle = h.color; ctx.lineWidth = 1; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); ctx.setLineDash([]);
+    let ly = y - 7; while (used.some(u => Math.abs(u - ly) < 11)) ly -= 11;
+    used.push(ly);
+    ctx.font = '10px system-ui,sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillStyle = h.color; ctx.fillText(h.label + ' ' + fmt(h.y), x1 - 4, ly);
   });
   if (hasK) {
     const bw = Math.max(2, slot * .65);
