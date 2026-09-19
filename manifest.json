@@ -1,0 +1,15 @@
+{
+  "name": "台股Bo報",
+  "short_name": "台股Bo報",
+  "description": "每天盤後播報大盤情勢、個股趨勢與 AI 建議、三大法人籌碼、排行。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0a1416",
+  "theme_color": "#0a1416",
+  "lang": "zh-Hant",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
