@@ -687,9 +687,11 @@ def load_store():
     for d in dates:
         tp = [r for c, r in days[d].items() if info.get(c, {}).get('m') == 'tpex']
         done[d].discard('iO'); done[d].discard('mO')
-        if any(r.get('fi') is not None for r in tp):
+        # 要有一定數量才算做過：有少數幾檔會同時出現在證交所那份（例如剛轉上市的），
+        # 只看「有沒有任何一檔」會被它們騙過去
+        if sum(1 for r in tp if r.get('fi') is not None) >= 100:
             done[d].add('iO')
-        if any(r.get('mg') is not None for r in tp):
+        if sum(1 for r in tp if r.get('mg') is not None) >= 100:
             done[d].add('mO')
     return days, info, taiex, taiex_ohl, set(meta.get('skip') or []), done
 
