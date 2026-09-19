@@ -288,7 +288,7 @@ footer{margin-top:16px;font-size:11px;color:var(--txt3);line-height:1.6}
           <button data-t="fiBuy">外資買超</button><button data-t="fiSell">外資賣超</button><button data-t="itBuy">投信買超</button><button data-t="mgUp">融資增加</button>
           <button data-t="aiLong">AI 建議做多</button><button data-t="aiShort">AI 建議做空</button>
         </div>
-        <p class="hint hide" id="aiHint">AI 建議排行：分數夠高（或夠低）、而且全市場過去出現相同技術條件時 10 日後的勝率也站在同一邊。欄位是「相同條件 10 日後平均漲跌／上漲機率」。點進個股會再用該檔自己五年的歷史算一次，結論可能略有不同。不是投資建議。</p>
+        <p class="hint hide" id="aiHint">AI 建議排行：以各檔自己五年的歷史為準（排程每天算好），找出跟今天最像的日子，10 日後的平均漲跌與勝率要跟綜合分數站在同一邊才列進來。欄位是「相似情境 10 日後平均漲跌／上漲機率」，跟個股頁的 AI 建議是同一份結果。不是投資建議。</p>
         <div class="filters">
           <select id="fMarket"><option value="">上市＋上櫃</option><option value="twse">只看上市</option><option value="tpex">只看上櫃</option></select>
           <select id="fVol"><option value="500">日均量 ≥ 500 張</option><option value="2000">日均量 ≥ 2000 張</option><option value="5000">日均量 ≥ 5000 張</option><option value="0">不限量</option></select>
@@ -1079,14 +1079,20 @@ function mktStatsOf(g) {
   AN.cache.set(ck, out);
   return out;
 }
-/* 排行用的 AI 建議：全市場相似情境＋這檔的分數。個股頁那個會再用它自己五年的歷史算一次 */
+/* 排行用的 AI 建議：優先用排程算好的「這檔自己五年的相似情境」，跟個股頁同一份；
+   還沒有的（排程還沒跑到）才退回全市場相同條件 */
 const AIR = {};
 function aiFor(code) {
   if (code in AIR) return AIR[code];
-  buildAnalogs();
-  const g = AN.last[code], a = A[code];
+  const a = A[code];
   let r = null;
-  if (g && a) { const mk = mktStatsOf(g); if (mk && mk.h[10]) r = { ad: advise(a, { h: mk.h, useOwn: false, mkt: mk }), s10: mk.h[10], s20: mk.h[20] }; }
+  if (a) {
+    const own = ownFromHist(code);
+    buildAnalogs();
+    const g = AN.last[code]; const mk = g ? mktStatsOf(g) : null;
+    if (own && own.h[10] && own.h[10].n >= 8) r = { ad: advise(a, { h: own.h, useOwn: true, mkt: mk }), s10: own.h[10], s20: own.h[20], own: true };
+    else if (mk && mk.h[10]) r = { ad: advise(a, { h: mk.h, useOwn: false, mkt: mk }), s10: mk.h[10], s20: mk.h[20], own: false };
+  }
   AIR[code] = r;
   return r;
 }
@@ -1133,11 +1139,19 @@ function ownAnalogs(S, vols) {
   HORIZ.forEach(h => out.h[h] = stats(picked.filter(q => q.i + h <= L).map(q => c[q.i + h] / c[q.i] - 1)));
   return out;
 }
-function analogsFor(closes, vols) {
+/* 排程用五年歷史算好、放在 history.json 的相似情境（跟 ownAnalogs 同一套算法）。
+   排行要對兩千多檔查，只能用這份；個股頁也優先用它，兩邊結論才一致 */
+function ownFromHist(code) {
+  const ai = H.q[code] && H.q[code].ai; if (!ai) return null;
+  const out = { n: ai.n, k: ai.k, h: {}, pre: true };
+  HORIZ.forEach(h => { const v = ai[String(h)]; out.h[h] = v ? { n: v[0], mean: v[1], med: v[2], p25: v[3], p75: v[4], win: v[5] } : null; });
+  return out;
+}
+function analogsFor(closes, vols, code) {
   const S = seriesOf(closes); const L = S.c.length - 1;
   if (L < 60) return null;
-  let own = null, mkt = null;
-  try { own = ownAnalogs(S, vols); } catch (e) { console.error(e); }
+  let own = code ? ownFromHist(code) : null, mkt = null;
+  if (!own) try { own = ownAnalogs(S, vols); } catch (e) { console.error(e); }
   try { mkt = marketAnalogs(S, L); } catch (e) { console.error(e); }
   if (!own && !mkt) return null;
   const useOwn = !!(own && own.h[10] && own.h[10].n >= 8);
@@ -1202,7 +1216,7 @@ function aiHtml(a, an, price) {
   if (an && an.h) {
     const row = (name, f) => '<tr><td>' + name + '</td>' + HORIZ.map(x => '<td>' + f(an.h[x]) + '</td>').join('') + '</tr>';
     h += '<h3>後 5／10／20 天粗估走勢</h3>';
-    if (an.useOwn) h += '<p class="hint">從這檔近 ' + an.span + ' 個交易日裡，找出技術面狀態跟今天最像的 ' + an.own.k + ' 天（看乖離、均線間距、月線斜率、RSI、MACD、區間位置、5 與 20 日動能、量能），統計它們之後的走勢：</p>';
+    if (an.useOwn) h += '<p class="hint">從這檔近 ' + (an.own.pre ? an.own.n + 60 : an.span) + ' 個交易日裡，找出技術面狀態跟今天最像的 ' + an.own.k + ' 天（看乖離、均線間距、月線斜率、RSI、MACD、區間位置、5 與 20 日動能、量能），統計它們之後的走勢：</p>';
     else h += '<p class="hint">這檔的歷史還不夠長，先用全市場過去' + (an.mkt.mode === 'exact' ? '六個條件完全相同' : '均線排列、RSI、MACD 相同') + '的情況統計：</p>';
     h += '<div class="chart"><canvas id="fan" height="170"></canvas></div>' +
       '<table class="fan"><tr><th></th>' + HORIZ.map(x => '<th>' + x + ' 日後</th>').join('') + '</tr>' +
@@ -1278,7 +1292,7 @@ async function openStock(code, go_) {
   const a = analyze(s.c, s.v, { fi: s.fi, it: s.it, mg: s.mg, o: s.o, h: s.h, l: s.l, f: s.f, pe: s0.pe, yld: s0.yld });
   if (!a) { el.innerHTML = '<div class="card"><div class="empty">' + esc(s.n) + ' 的資料太少，還判斷不了</div></div>'; return; }
   const on = WATCH.includes(code);
-  let an = null; try { an = analogsFor(s.c, s.v); } catch (e) { console.error(e); }
+  let an = null; try { an = analogsFor(s.c, s.v, code); } catch (e) { console.error(e); }
   const tiles = [
     ['5 日均線', fmt(a.ma5)], ['20 日均線', fmt(a.ma20)], ['60 日均線', fmt(a.ma60)], ['RSI（14）', a.rsi == null ? '—' : a.rsi.toFixed(0)],
     ['近 20 日', '<span class="' + cls(a.ret20) + '">' + pct(a.ret20) + '</span>'], ['月線乖離', '<span class="' + cls(a.bias20) + '">' + pct(a.bias20) + '</span>'],

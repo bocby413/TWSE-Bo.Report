@@ -13,8 +13,8 @@
   大盤新聞      Google 新聞 RSS
 
 寫出來的檔：
-  history.json   全市場精簡版：每檔 120 天收盤與成交量、最近 20 天法人與融資、本益比殖利率，
-                 加權指數的開高低收。廣度、排行都算這個
+  history.json   全市場精簡版：每檔 120 天收盤與成交量、最近 20 天法人與融資、本益比殖利率、
+                 用五年歷史算好的相似情境統計（ai），加權指數的開高低收。廣度、排行都算這個
   d/XXX.json     依代號前三碼分片的詳細版：收盤與成交量五年、開高低一年、法人與融資 60 天、基本面，
                  點到那檔才載入。開高低與法人另外用 from 標起始位置，前面不塞 null
   meta.json      給這支腳本自己看的：全部日期、哪天做過什麼、假日、加權指數全長
@@ -625,6 +625,135 @@ def fetch_news():
     return out
 
 
+# ── 個股相似情境（跟 index.html 的 ownAnalogs 同一套，改了要兩邊一起改） ──
+# 把過去每一天的技術狀態算成一組數字，標準化後找跟今天最像的幾天，看它們之後 5／10／20 天怎麼走。
+# 排行要對兩千多檔查，瀏覽器載不動每檔五年的資料，所以在這裡算好放進 history.json
+HORIZ = (5, 10, 20)
+
+
+def _ffill(a):
+    out, last = [], None
+    for v in a:
+        if v is not None:
+            last = v
+        out.append(last)
+    i = 0
+    while i < len(out) and out[i] is None:
+        i += 1
+    return out[i:]
+
+
+def _sma(a, n):
+    out, s = [None] * len(a), 0.0
+    for i, v in enumerate(a):
+        s += v
+        if i >= n:
+            s -= a[i - n]
+        if i >= n - 1:
+            out[i] = s / n
+    return out
+
+
+def _ema(a, n):
+    k, out, e = 2.0 / (n + 1), [], None
+    for v in a:
+        e = v if e is None else v * k + e * (1 - k)
+        out.append(e)
+    return out
+
+
+def _rsi_series(c, n=14):
+    out = [None] * len(c)
+    if len(c) <= n:
+        return out
+    g = l = 0.0
+    for i in range(1, n + 1):
+        d = c[i] - c[i - 1]
+        if d > 0:
+            g += d
+        else:
+            l -= d
+    g /= n
+    l /= n
+    out[n] = 100.0 if l == 0 else 100 - 100 / (1 + g / l)
+    for i in range(n + 1, len(c)):
+        d = c[i] - c[i - 1]
+        g = (g * (n - 1) + max(d, 0)) / n
+        l = (l * (n - 1) + max(-d, 0)) / n
+        out[i] = 100.0 if l == 0 else 100 - 100 / (1 + g / l)
+    return out
+
+
+def _macd_hist(c):
+    e12, e26 = _ema(c, 12), _ema(c, 26)
+    dif = [a - b for a, b in zip(e12, e26)]
+    dea = _ema(dif, 9)
+    return [a - b for a, b in zip(dif, dea)]
+
+
+def _stats(arr):
+    if len(arr) < 5:
+        return None
+    s = sorted(arr)
+    n = len(s)
+    q = lambda p: s[min(n - 1, int(p * n))]
+    return [n, round(sum(s) / n * 100, 2), round(q(.5) * 100, 2), round(q(.25) * 100, 2), round(q(.75) * 100, 2),
+            round(sum(1 for v in s if v > 0) / n * 100, 1)]
+
+
+def own_analogs(closes, vols):
+    """回 {'n': 候選天數, 'k': 取幾天, '5': [n, 平均%, 中位%, p25%, p75%, 勝率%], '10': …, '20': …}，資料不夠回 None"""
+    c = _ffill(closes)
+    L = len(c) - 1
+    if L < 60:
+        return None
+    ma5, ma20, ma60 = _sma(c, 5), _sma(c, 20), _sma(c, 60)
+    rs, mh = _rsi_series(c, 14), _macd_hist(c)
+    vr = None
+    if vols and any(v for v in vols):
+        off = len(vols) - len(c)
+        v = [(vols[i + off] or 0) if 0 <= i + off < len(vols) else 0 for i in range(len(c))]
+        v5, v20 = _sma(v, 5), _sma(v, 20)
+        vr = [(v5[i] / v20[i] - 1) if v20[i] else None for i in range(len(c))]
+
+    def feat(i):
+        if i < 60 or ma60[i] is None or rs[i] is None or ma20[i - 5] is None:
+            return None
+        p = c[i]
+        w = c[i - 59:i + 1]
+        hi, lo = max(w), min(w)
+        f = [(p - ma20[i]) / ma20[i], (ma5[i] - ma20[i]) / ma20[i], (ma20[i] - ma60[i]) / ma60[i],
+             ma20[i] / ma20[i - 5] - 1, rs[i] / 100, mh[i] / p, (p - lo) / (hi - lo) if hi > lo else .5,
+             p / c[i - 20] - 1, p / c[i - 5] - 1]
+        if vr is not None:
+            f.append(0 if vr[i] is None else vr[i])
+        return f
+
+    rows = [(i, feat(i)) for i in range(60, L + 1)]
+    rows = [(i, f) for i, f in rows if f]
+    cur = next((f for i, f in rows if i == L), None)
+    if cur is None or len(rows) < 25:
+        return None
+    dim = len(cur)
+    mean = [sum(f[k] for _, f in rows) / len(rows) for k in range(dim)]
+    sd = [(sum((f[k] - mean[k]) ** 2 for _, f in rows) / len(rows)) ** .5 or 1 for k in range(dim)]
+    dist = lambda f: sum(((f[k] - cur[k]) / sd[k]) ** 2 for k in range(dim)) ** .5
+    cand = sorted(((i, dist(f)) for i, f in rows if i <= L - 5), key=lambda x: x[1])
+    K = min(40, max(10, len(cand) // 4))
+    picked = []
+    for i, d in cand:
+        if all(abs(j - i) >= 3 for j in picked):
+            picked.append(i)
+        if len(picked) >= K:
+            break
+    out = {'n': len(cand), 'k': len(picked)}
+    for h in HORIZ:
+        st = _stats([c[i + h] / c[i] - 1 for i in picked if i + h <= L])
+        if st:
+            out[str(h)] = st
+    return out
+
+
 # ── 主流程 ──
 KEYS = ('o', 'h', 'l', 'c', 'v', 'fi', 'it', 'dl', 'mg', 'ms')
 
@@ -908,6 +1037,12 @@ def main():
             s['f'] = m['f']
         shards.setdefault(shard_of(code), {})[code] = s
         h = {'n': s['n'], 'm': s['m'], 'c': series['c'][hoff:], 'v': series['v'][hoff:]}
+        try:
+            ai = own_analogs(series['c'], series['v'])
+        except Exception:
+            ai = None
+        if ai and ai.get('10'):
+            h['ai'] = ai
         for k in ('fi', 'it', 'dl', 'mg'):
             tail = series[k][off:]
             if any(v is not None for v in tail):
