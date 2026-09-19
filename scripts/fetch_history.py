@@ -863,7 +863,7 @@ def main():
             s['f'] = m['f']
         shards.setdefault(shard_of(code), {})[code] = s
         h = {'n': s['n'], 'm': s['m'], 'c': series['c'], 'v': series['v']}
-        for k in ('fi', 'it', 'mg'):
+        for k in ('fi', 'it', 'dl', 'mg'):
             tail = series[k][off:]
             if any(v is not None for v in tail):
                 h[k] = tail
