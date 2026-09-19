@@ -706,6 +706,9 @@ def main():
     end = today if now.hour * 60 + now.minute >= 14 * 60 + 30 else today - timedelta(days=1)
     chip_ok_today = now.hour * 60 + now.minute >= 17 * 60 + 35
     start = today - timedelta(days=LOOKBACK)
+    if len(days) >= KEEP:
+        # 已經滿 120 個交易日了，比最舊那天還早的不用再抓，抓了也會被切掉
+        start = max(start, datetime.strptime(min(days), '%Y-%m-%d').date())
 
     # 1. 行情：缺哪天補哪天（同時決定那天是不是交易日）。
     #    沒有開高低的日子（舊版檔案留下的）也重抓一次
