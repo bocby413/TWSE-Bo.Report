@@ -81,7 +81,7 @@ button,input,select{font:inherit;color:inherit}
 .sgrid{grid-template-columns:1.9fr 1fr}
 .two{grid-template-columns:1fr 1fr}
 .chart{position:relative;margin:4px 0}
-.chart canvas{width:100%;max-width:100%;display:block;border-radius:10px;background:var(--deep)}
+.chart canvas{width:100%;max-width:100%;display:block;border-radius:10px;background:var(--deep);touch-action:pan-y;cursor:crosshair;user-select:none}
 .chart{min-width:0;overflow:hidden}
 .g>*{min-width:0}   /* 格子裡的欄位不能被畫布的實際像素寬撐大，不然每重畫一次就長大一點 */
 .tip{position:absolute;pointer-events:none;background:rgba(7,16,15,.96);border:1px solid var(--edge2);border-radius:8px;padding:6px 9px;font-size:12px;line-height:1.5;white-space:nowrap;display:none;z-index:2}
@@ -252,7 +252,7 @@ footer{margin-top:16px;font-size:11px;color:var(--txt3);line-height:1.6}
           <div class="card"><h2><i>◎</i>市場脈搏 <small>大盤情勢燈號</small></h2>
             <div class="gauge"><div><canvas id="gauge" height="120"></canvas><div class="gv" id="gv"></div></div><div class="subs" id="subs"></div></div>
           </div>
-          <div class="card"><h2><i>▲</i>加權指數走勢 <small>K 線＋均線，滑過看數字</small></h2>
+          <div class="card"><h2><i>▲</i>加權指數走勢 <small>滾輪縮放、拖曳平移、雙擊還原</small></h2>
             <div class="chart"><canvas id="mChart" height="215"></canvas><div class="tip" id="mTip"></div></div>
             <div class="legend"><span><i style="background:#ff5a68"></i>K 線</span><span><i style="background:var(--ma5)"></i>MA5</span><span><i style="background:var(--ma20)"></i>MA20</span><span><i style="background:var(--ma60)"></i>MA60</span></div>
             <div class="tiles" id="mOhlc"></div>
@@ -591,6 +591,7 @@ function hover(cv, tipEl, N, xs, x0, x1, y0, y1, W, dpr, html, dotY) {
     ctx.restore();
   };
   const show = ev => {
+    if (cv._drag) return;                                    /* 拖曳中不要跳十字線 */
     const rect = cv.getBoundingClientRect();
     const px = (ev.touches ? ev.touches[0].clientX : ev.clientX) - rect.left;
     let i = Math.round((px - x0) / (x1 - x0) * (N - 1)); i = Math.max(0, Math.min(N - 1, i));
@@ -647,6 +648,8 @@ function drawPrice(cv, tipEl, o) {
       const top = ys(Math.max(op, c)), bh = Math.max(1, Math.abs(ys(op) - ys(c)));
       ctx.fillRect(xs(i) - bw / 2, top, bw, bh);
     }
+    /* 沒有開高低的那段（K 棒只存一年，再往前只有收盤）用線接上 */
+    if (o.open.some(v => v == null)) line(ctx, o.close.map((v, i) => o.open[i] == null || (i + 1 < N && o.open[i + 1] == null) ? v : null), xs, ys, '#ffffff', 1.5);
   } else {
     const grad = ctx.createLinearGradient(0, y0, 0, y1);
     grad.addColorStop(0, 'rgba(255,255,255,.14)'); grad.addColorStop(1, 'rgba(255,255,255,0)');
@@ -724,6 +727,51 @@ function sparkline(cv, data) {
 
 
 
+
+/* ── 可拖拉、可縮放的價格圖 ── 像 TradingView 那樣：滾輪以游標為中心縮放、按住拖曳平移、
+   手機單指拖曳、雙指縮放、雙擊回到預設範圍。資料整份給它，它自己切出正在看的那段交給 drawPrice */
+function makeKChart(cv, tipEl, full, span) {
+  const N = full.close.length;
+  const st = { a: Math.max(0, N - Math.min(span, N)), b: N };
+  const render = () => {
+    const cut = arr => arr ? arr.slice(st.a, st.b) : null;
+    drawPrice(cv, tipEl, { dates: cut(full.dates), name: full.name, close: cut(full.close), open: cut(full.open), high: cut(full.high), low: cut(full.low), vol: cut(full.vol),
+      lines: (full.lines || []).map(l => ({ name: l.name, color: l.color, data: cut(l.data) })) });
+    cv._view = [st.a, st.b];
+  };
+  const clamp = (a, len) => { len = Math.max(15, Math.min(N, Math.round(len))); a = Math.max(0, Math.min(N - len, Math.round(a))); st.a = a; st.b = a + len; };
+  const barW = () => (cv.clientWidth - 64) / Math.max(1, st.b - st.a);          // drawPrice 左右留白約 64px
+  const zoom = (factor, px) => {                                                    // px 是游標在畫布上的 x，縮放時那一根不動
+    const rect = cv.getBoundingClientRect(); const rel = Math.max(0, Math.min(1, (px - rect.left - 8) / (cv.clientWidth - 64)));
+    const len0 = st.b - st.a, len1 = len0 * factor; const anchor = st.a + rel * len0;
+    clamp(anchor - rel * len1, len1); render();
+  };
+  cv.addEventListener('wheel', e => { e.preventDefault(); zoom(e.deltaY > 0 ? 1.15 : 1 / 1.15, e.clientX); }, { passive: false });
+  let drag = null;
+  cv.addEventListener('mousedown', e => { drag = { x: e.clientX, a: st.a }; cv._drag = true; cv.style.cursor = 'grabbing'; });
+  window.addEventListener('mousemove', e => { if (!drag) return; const shift = Math.round((drag.x - e.clientX) / barW()); if (shift) { clamp(drag.a + shift, st.b - st.a); render(); } });
+  window.addEventListener('mouseup', () => { if (drag) { drag = null; cv._drag = false; cv.style.cursor = ''; } });
+  cv.addEventListener('dblclick', () => { clamp(N - Math.min(span, N), Math.min(span, N)); render(); });
+  let touch = null;
+  cv.addEventListener('touchstart', e => {
+    if (e.touches.length === 2) { const [p, q] = e.touches; touch = { pinch: Math.hypot(p.clientX - q.clientX, p.clientY - q.clientY), len: st.b - st.a, mid: (p.clientX + q.clientX) / 2 }; cv._drag = true; }
+    else if (e.touches.length === 1) touch = { x: e.touches[0].clientX, a: st.a, moved: false };
+  }, { passive: true });
+  cv.addEventListener('touchmove', e => {
+    if (!touch) return;
+    if (e.touches.length === 2 && touch.pinch) {
+      e.preventDefault(); const [p, q] = e.touches; const d = Math.hypot(p.clientX - q.clientX, p.clientY - q.clientY);
+      const len1 = touch.len * touch.pinch / Math.max(1, d); const rect = cv.getBoundingClientRect(); const rel = Math.max(0, Math.min(1, (touch.mid - rect.left - 8) / (cv.clientWidth - 64)));
+      const anchor = st.a + rel * (st.b - st.a); clamp(anchor - rel * len1, len1); render();
+    } else if (e.touches.length === 1 && touch.x != null) {
+      const shift = Math.round((touch.x - e.touches[0].clientX) / barW());
+      if (shift) { touch.moved = true; cv._drag = true; e.preventDefault(); clamp(touch.a + shift, st.b - st.a); render(); }
+    }
+  }, { passive: false });
+  cv.addEventListener('touchend', () => { touch = null; cv._drag = false; });
+  render();
+  return { render, set: n => { clamp(N - Math.min(n, N), Math.min(n, N)); render(); }, st };
+}
 
 /* ── 大盤：先算，再各處畫 ── */
 function computeMarket() {
@@ -836,8 +884,8 @@ function renderHome() {
   // 走勢
   if (m) {
     const f = ffill(M.tx); const c = f.s; const off = f.off; const padN = a => new Array(off).fill(null).concat(a);
-    drawPrice($('#mChart'), $('#mTip'), { dates: H.dates, name: '加權指數', close: M.tx, open: M.xo, high: M.xh, low: M.xl,
-      lines: [{ name: 'MA5', color: '#f5c542', data: padN(sma(c, 5)) }, { name: 'MA20', color: '#2dd4bf', data: padN(sma(c, 20)) }, { name: 'MA60', color: '#a78bfa', data: padN(sma(c, 60)) }] });
+    makeKChart($('#mChart'), $('#mTip'), { dates: H.dates, name: '加權指數', close: M.tx, open: M.xo, high: M.xh, low: M.xl,
+      lines: [{ name: 'MA5', color: '#f5c542', data: padN(sma(c, 5)) }, { name: 'MA20', color: '#2dd4bf', data: padN(sma(c, 20)) }, { name: 'MA60', color: '#a78bfa', data: padN(sma(c, 60)) }] }, 120);
     const L = H.dates.length - 1, t = [];
     if (M.hasK && M.xo[L] != null) t.push(['開盤', fmt(M.xo[L], 2)], ['最高', fmt(M.xh[L], 2)], ['最低', fmt(M.xl[L], 2)]);
     t.push(['昨收', fmt(M.tx[L - 1], 2)], ['MA20 月線', fmt(m.ma20, 0)], ['MA60 季線', fmt(m.ma60, 0)], ['RSI', m.rsi == null ? '—' : m.rsi.toFixed(0)], ['近 20 日', '<span class="' + cls(m.ret20) + '">' + pct(m.ret20) + '</span>']);
@@ -1214,7 +1262,7 @@ async function openStock(code, go_) {
     '<div class="verdict">' + badgeHtml(a) + '<div class="meter"><i style="left:' + (50 + Math.max(-MAXS, Math.min(MAXS, a.score)) * 50 / MAXS) + '%"></i></div>' +
     '<span class="hint">資料到 ' + esc(dates[dates.length - 1]) + '・' + a.n + ' 個交易日</span></div></div>' +
     '<div class="g sgrid">' +
-      '<div><div class="card"><h2><i>▲</i>K 線 <small>MA5／20／60，下方成交張數</small><span class="tabs mini" id="rng">' + [[63, '3 月'], [126, '6 月'], [250, '1 年'], [9999, '5 年']].map(([n, t]) => '<button data-n="' + n + '"' + (n === RNG ? ' class="on"' : '') + '>' + t + '</button>').join('') + '</span></h2><div class="chart"><canvas id="sChart" height="300"></canvas><div class="tip" id="sTip"></div></div>' +
+      '<div><div class="card"><h2><i>▲</i>K 線 <small>滾輪縮放、拖曳平移、雙擊還原</small><span class="tabs mini" id="rng">' + [[63, '3 月'], [126, '6 月'], [250, '1 年'], [9999, '5 年']].map(([n, t]) => '<button data-n="' + n + '"' + (n === RNG ? ' class="on"' : '') + '>' + t + '</button>').join('') + '</span></h2><div class="chart"><canvas id="sChart" height="300"></canvas><div class="tip" id="sTip"></div></div>' +
         '<div class="legend"><span><i style="background:#ff5a68"></i>K 線（紅漲綠跌）</span><span><i style="background:var(--ma5)"></i>MA5</span><span><i style="background:var(--ma20)"></i>MA20</span><span><i style="background:var(--ma60)"></i>MA60</span></div>' +
         '<div class="tiles">' + tiles.map(tile).join('') + '</div></div>' +
         (hasChip ? '<div class="card" style="margin-top:10px"><h2><i>◈</i>籌碼 <small>法人買賣超（張）＋融資融券餘額</small></h2><div class="tiles">' + chipTiles.map(tile).join('') + '</div>' +
@@ -1230,15 +1278,10 @@ async function openStock(code, go_) {
       '</div>' +
     '</div>';
   $('#star').onclick = () => { if (WATCH.includes(code)) WATCH = WATCH.filter(c => c !== code); else WATCH.push(code); saveWatch(); openStock(code); renderWatchHome(); };
-  const drawK = () => {
-    const f = ffill(s.c); const c = f.s; const off = f.off; const padN = arr => new Array(off).fill(null).concat(arr);
-    const n = Math.min(RNG, dates.length), cut = arr => arr ? arr.slice(-n) : null;
-    const hasK = s.o && s.o.slice(-n).some(v => v != null), kOK = hasK && n <= 260;   // 五年只有收盤線，K 棒只存一年
-    drawPrice($('#sChart'), $('#sTip'), { dates: dates.slice(-n), name: '收盤', close: cut(s.c), open: kOK ? cut(s.o) : null, high: kOK ? cut(s.h) : null, low: kOK ? cut(s.l) : null, vol: cut(s.v),
-      lines: [{ name: 'MA5', color: '#f5c542', data: cut(padN(sma(c, 5))) }, { name: 'MA20', color: '#2dd4bf', data: cut(padN(sma(c, 20))) }, { name: 'MA60', color: '#a78bfa', data: cut(padN(sma(c, 60))) }] });
-  };
-  drawK();
-  $('#rng').onclick = e => { const b = e.target.closest('button'); if (!b) return; RNG = +b.dataset.n; $('#rng').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); drawK(); };
+  const f = ffill(s.c); const c = f.s; const off = f.off; const padN = arr => new Array(off).fill(null).concat(arr);
+  const kc = makeKChart($('#sChart'), $('#sTip'), { dates, name: '收盤', close: s.c, open: s.o, high: s.h, low: s.l, vol: s.v,
+    lines: [{ name: 'MA5', color: '#f5c542', data: padN(sma(c, 5)) }, { name: 'MA20', color: '#2dd4bf', data: padN(sma(c, 20)) }, { name: 'MA60', color: '#a78bfa', data: padN(sma(c, 60)) }] }, RNG);
+  $('#rng').onclick = e => { const b = e.target.closest('button'); if (!b) return; RNG = +b.dataset.n; $('#rng').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); kc.set(RNG); };
   if (an && an.h && $('#fan')) drawFan($('#fan'), a.c, an);
   if (hasChip) {
     const n = Math.min(60, dates.length), cut = arr => arr ? arr.slice(-n) : null;   // 籌碼只看最近 60 天，太長會擠成一團
