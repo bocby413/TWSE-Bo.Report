@@ -15,7 +15,9 @@
 寫出來的檔：
   history.json   全市場精簡版：每檔 120 天收盤與成交量、最近 20 天法人與融資、本益比殖利率，
                  加權指數的開高低收。廣度、排行都算這個
-  d/XX.json      依代號前兩碼分片的詳細版：開高低收、法人、融資融券、基本面，點到那檔才載入
+  d/XXX.json     依代號前三碼分片的詳細版：收盤與成交量五年、開高低一年、法人與融資 60 天、基本面，
+                 點到那檔才載入。開高低與法人另外用 from 標起始位置，前面不塞 null
+  meta.json      給這支腳本自己看的：全部日期、哪天做過什麼、假日、加權指數全長
   news.json      大盤新聞
 """
 import json, os, re, ssl, time, urllib.request, urllib.parse, html
@@ -23,11 +25,14 @@ from datetime import datetime, timedelta, timezone
 from xml.etree import ElementTree
 
 TPE = timezone(timedelta(hours=8))
-KEEP = 120              # 每檔保留幾個交易日
+KEEP = 1250             # 每檔收盤與成交量保留幾個交易日，約五年，個股頁找相似情境要用
+KEEP_K = 250            # 開高低只留最近一年，畫 K 線夠了，五年份的檔案會太大
+HIST_KEEP = 120         # 首頁用的精簡版 history.json 只留這麼多，檔案才不會太大
 MIN_CODES = 800         # 少於這個檔數就當抓壞了，不覆蓋舊檔
 CHIP_BACK = 60          # 法人與融資往回補幾個交易日就好（每天要多抓四支，省一點）
-LOOKBACK = 200          # 往回補最多幾個「日曆日」
-TIME_BUDGET = 38 * 60   # 跑超過這個秒數就先收工寫檔，下次接著補（Actions 的 timeout 設 50 分）
+LOOKBACK = 1900         # 往回補最多幾個「日曆日」，1250 個交易日大約是 1830 個日曆日
+TIME_BUDGET = 320 * 60  # 跑超過這個秒數就先收工寫檔，下次接著補（Actions 的 timeout 設 350 分；
+                        # 只有第一次回補五年會跑這麼久，之後每天幾分鐘）
 TWSE_GAP = 3.5          # 證交所限速大約 5 秒 3 次，保守一點
 TPEX_GAP = 1.5
 T0 = time.time()
@@ -625,18 +630,20 @@ KEYS = ('o', 'h', 'l', 'c', 'v', 'fi', 'it', 'dl', 'mg', 'ms')
 
 
 def shard_of(code):
-    """依代號前兩碼分片；00 開頭的 ETF 有三百多檔，多切一位免得那一片太大"""
-    return code[:3] if code.startswith('00') else code[:2]
+    """依代號前三碼分片（一片十幾檔）；00 開頭的 ETF 有三百多檔，切到四碼"""
+    return code[:4] if code.startswith('00') else code[:3]
 
 
 def load_store():
     """把 d/*.json 攤回 days[date][code] = {...}，dates／skip／done 從 history.json 拿"""
     meta = {}
-    try:
-        with open('history.json', encoding='utf-8') as f:
-            meta = json.load(f)
-    except Exception:
-        pass
+    for fn in ('meta.json', 'history.json'):          # 新版的進度在 meta.json，舊版只有 history.json
+        try:
+            with open(fn, encoding='utf-8') as f:
+                meta = json.load(f)
+            break
+        except Exception:
+            pass
     dates = list(meta.get('dates') or [])
     days = {d: {} for d in dates}
     info = {}                                          # code -> {'n','m','f'}
@@ -659,14 +666,25 @@ def load_store():
             sd = sh.get('dates') or []
             for code, s in (sh.get('q') or {}).items():
                 info[code] = {'n': s.get('n', ''), 'm': s.get('m', ''), 'f': s.get('f') or {}}
+                # 新格式：o/h/l 放在 k 區塊、法人融資放在 x 區塊，各自有 from（在 dates 裡的起始位置）
+                cols = {}
+                for k in ('c', 'v'):
+                    cols[k] = (0, s.get(k) or [])
+                for blk, keys in (('k', ('o', 'h', 'l')), ('x', ('fi', 'it', 'dl', 'mg', 'ms'))):
+                    b = s.get(blk)
+                    for k in keys:
+                        if isinstance(b, dict) and b.get(k):
+                            cols[k] = (b.get('from', 0), b[k])
+                        elif s.get(k):                        # 舊格式：跟 dates 一樣長
+                            cols[k] = (0, s[k])
                 for j, d in enumerate(sd):
                     if d not in days:
                         continue
                     row = {}
-                    for k in KEYS:
-                        arr = s.get(k)
-                        if arr and j < len(arr) and arr[j] is not None:
-                            row[k] = arr[j]
+                    for k, (frm, arr) in cols.items():
+                        jj = j - frm
+                        if 0 <= jj < len(arr) and arr[jj] is not None:
+                            row[k] = arr[jj]
                     if row:
                         days[d][code] = row
     # 舊版 history.json（沒有 d/ 的時候）只有收盤跟成交量，也接得起來
@@ -715,12 +733,13 @@ def main():
     # 1. 行情：缺哪天補哪天（同時決定那天是不是交易日）。
     #    沒有開高低的日子（舊版檔案留下的）也重抓一次
     todo = []
+    recent = set(sorted(days)[-KEEP_K:])               # 只有這些天需要開高低，更早的沒有也不用重抓
     day = start
     while day <= end:
         s = day.isoformat()
         if day.weekday() < 5 and s not in skip:
             have = days.get(s)
-            if have is None or not any('o' in r for r in list(have.values())[:50]):
+            if have is None or (s in recent and not any('o' in r for r in list(have.values())[:50])):
                 todo.append(day)
         day += timedelta(days=1)
     print('已有 %d 個交易日，行情要補 %d 天' % (len(days), len(todo)), flush=True)
@@ -769,7 +788,7 @@ def main():
 
     # 2. 加權指數的開高低：哪個月有交易日還沒有開盤指數就抓那個月（一個月一支請求）
     trading = sorted(days)[-KEEP:]
-    months = sorted({d[:7] for d in trading if d not in taiex_ohl})
+    months = sorted({d[:7] for d in trading[-KEEP_K:] if d not in taiex_ohl})
     for ym in months:
         if stopped:
             break
@@ -867,6 +886,9 @@ def main():
     hist_q, shards = {}, {}
     n20 = min(20, len(dates))
     off = len(dates) - n20
+    hoff = max(0, len(dates) - HIST_KEEP)              # history.json 只留最後 HIST_KEEP 天
+    kfrom = max(0, len(dates) - KEEP_K)                # 開高低從這裡開始存
+    xfrom = max(0, len(dates) - CHIP_BACK)             # 法人融資從這裡開始存
     for code in codes:
         m = info[code]
         series = {k: [] for k in KEYS}
@@ -875,12 +897,17 @@ def main():
             for k in KEYS:
                 v = row.get(k)
                 series[k].append(clean(v) if k in ('o', 'h', 'l', 'c') else v)
-        s = {'n': m.get('n', ''), 'm': m.get('m', '')}
-        s.update(series)
+        s = {'n': m.get('n', ''), 'm': m.get('m', ''), 'c': series['c'], 'v': series['v'],
+             'k': {'from': kfrom, 'o': series['o'][kfrom:], 'h': series['h'][kfrom:], 'l': series['l'][kfrom:]},
+             'x': {'from': xfrom}}
+        for k in ('fi', 'it', 'dl', 'mg', 'ms'):
+            tail = series[k][xfrom:]
+            if any(v is not None for v in tail):
+                s['x'][k] = tail
         if m.get('f'):
             s['f'] = m['f']
         shards.setdefault(shard_of(code), {})[code] = s
-        h = {'n': s['n'], 'm': s['m'], 'c': series['c'], 'v': series['v']}
+        h = {'n': s['n'], 'm': s['m'], 'c': series['c'][hoff:], 'v': series['v'][hoff:]}
         for k in ('fi', 'it', 'dl', 'mg'):
             tail = series[k][off:]
             if any(v is not None for v in tail):
@@ -898,13 +925,16 @@ def main():
     for fn in os.listdir('d'):
         if fn.endswith('.json') and fn[:-5] not in shards:
             os.remove(os.path.join('d', fn))
-    out = {'dates': dates, 'updated': now.strftime('%Y-%m-%d %H:%M'), 'keep': KEEP, 'count': len(hist_q),
-           'skip': skip, 'done': {d: sorted(done.get(d, {'q'})) for d in dates},
-           'idx': {'TAIEX': [clean(taiex.get(d)) for d in dates],
-                   'TAIEXo': [clean(taiex_ohl[d][0]) if d in taiex_ohl else None for d in dates],
-                   'TAIEXh': [clean(taiex_ohl[d][1]) if d in taiex_ohl else None for d in dates],
-                   'TAIEXl': [clean(taiex_ohl[d][2]) if d in taiex_ohl else None for d in dates]},
-           'chipDays': n20, 'q': hist_q}
+    idx = {'TAIEX': [clean(taiex.get(d)) for d in dates],
+           'TAIEXo': [clean(taiex_ohl[d][0]) if d in taiex_ohl else None for d in dates],
+           'TAIEXh': [clean(taiex_ohl[d][1]) if d in taiex_ohl else None for d in dates],
+           'TAIEXl': [clean(taiex_ohl[d][2]) if d in taiex_ohl else None for d in dates]}
+    with open('meta.json', 'w', encoding='utf-8') as fp:
+        json.dump({'dates': dates, 'updated': now.strftime('%Y-%m-%d %H:%M'), 'keep': KEEP, 'skip': skip,
+                   'done': {d: sorted(done.get(d, {'q'})) for d in dates}, 'idx': idx},
+                  fp, ensure_ascii=False, separators=(',', ':'))
+    out = {'dates': dates[hoff:], 'updated': now.strftime('%Y-%m-%d %H:%M'), 'keep': HIST_KEEP, 'count': len(hist_q),
+           'idx': {k: v[hoff:] for k, v in idx.items()}, 'chipDays': n20, 'q': hist_q}
     with open('history.json', 'w', encoding='utf-8') as fp:
         json.dump(out, fp, ensure_ascii=False, separators=(',', ':'))
     if news or not os.path.exists('news.json'):
