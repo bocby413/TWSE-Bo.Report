@@ -1208,10 +1208,17 @@ function renderWatchView() {
 
 /* ── 個股 ── 詳細資料在 d/XX.json 分片裡，點到才抓 */
 async function shard(code) {
-  const k = code.startsWith('00') ? code.slice(0, 4) : code.slice(0, 3);   // 前三碼一片；ETF 太多，00 開頭切到四碼
-  if (!SH.has(k)) SH.set(k, fetch('d/' + k + '.json?_=' + BUST(), { cache: 'no-cache' }).then(r => r.ok ? r.json() : null).catch(() => null));
-  const sh = await SH.get(k);
-  if (!(sh && sh.q && sh.q[code])) return null;
+  // 前三碼一片；ETF 太多，00 開頭切到四碼。找不到就退回舊的切法（兩碼／三碼），
+  // 資料格式換版、排程還沒跑完的那段時間才不會沒東西
+  const keys = code.startsWith('00') ? [code.slice(0, 4), code.slice(0, 3)] : [code.slice(0, 3), code.slice(0, 2)];
+  let sh = null;
+  for (const k of keys) {
+    if (!SH.has(k)) SH.set(k, fetch('d/' + k + '.json?_=' + BUST(), { cache: 'no-cache' }).then(r => r.ok ? r.json() : null).catch(() => null));
+    sh = await SH.get(k);
+    if (sh && sh.q && sh.q[code]) break;
+    sh = null;
+  }
+  if (!sh) return null;
   // 開高低（k 區塊）跟法人融資（x 區塊）只存最近一段，用 from 對齊回 dates 的長度
   const s = Object.assign({}, sh.q[code]), N = sh.dates.length;
   const pad = (blk, key) => {
