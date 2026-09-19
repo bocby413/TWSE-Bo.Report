@@ -286,7 +286,9 @@ footer{margin-top:16px;font-size:11px;color:var(--txt3);line-height:1.6}
           <button data-t="strong" class="on">強勢股</button><button data-t="weak">弱勢股</button><button data-t="gain">漲幅</button><button data-t="lose">跌幅</button>
           <button data-t="high">創 60 日新高</button><button data-t="low">創 60 日新低</button><button data-t="vol">量能放大</button>
           <button data-t="fiBuy">外資買超</button><button data-t="fiSell">外資賣超</button><button data-t="itBuy">投信買超</button><button data-t="mgUp">融資增加</button>
+          <button data-t="aiLong">AI 建議做多</button><button data-t="aiShort">AI 建議做空</button>
         </div>
+        <p class="hint hide" id="aiHint">AI 建議排行：分數夠高（或夠低）、而且全市場過去出現相同技術條件時 10 日後的勝率也站在同一邊。欄位是「相同條件 10 日後平均漲跌／上漲機率」。點進個股會再用該檔自己五年的歷史算一次，結論可能略有不同。不是投資建議。</p>
         <div class="filters">
           <select id="fMarket"><option value="">上市＋上櫃</option><option value="twse">只看上市</option><option value="tpex">只看上櫃</option></select>
           <select id="fVol"><option value="500">日均量 ≥ 500 張</option><option value="2000">日均量 ≥ 2000 張</option><option value="5000">日均量 ≥ 5000 張</option><option value="0">不限量</option></select>
@@ -958,6 +960,8 @@ const RANK = {
   fiSell: { col: '外資 5 日(張)', val: a => a.fi5, key: a => -a.fi5, only: a => a.fi5 < 0, raw: true },
   itBuy:  { col: '投信 5 日(張)', val: a => a.it5, key: a => a.it5, only: a => a.it5 > 0, raw: true },
   mgUp:   { col: '融資 5 日', val: a => a.mg5, key: a => a.mg5, only: a => a.mg5 != null && a.mg >= 500 },
+  aiLong:  { col: 'AI 10 日平均／勝率', only: (a, c) => { const r = aiFor(c); return r && r.ad.act === 'long'; }, key: (a, c) => { const r = aiFor(c); return a.score * 100 + r.s10.win; }, fmtv: (a, c) => { const r = aiFor(c); return '<span class="' + cls(r.s10.mean) + '">' + pct(r.s10.mean) + '</span> ／ ' + r.s10.win.toFixed(0) + '%'; } },
+  aiShort: { col: 'AI 10 日平均／勝率', only: (a, c) => { const r = aiFor(c); return r && r.ad.act === 'short'; }, key: (a, c) => { const r = aiFor(c); return -(a.score * 100 + r.s10.win); }, fmtv: (a, c) => { const r = aiFor(c); return '<span class="' + cls(r.s10.mean) + '">' + pct(r.s10.mean) + '</span> ／ ' + r.s10.win.toFixed(0) + '%'; } },
 };
 function rankList(tab, o) {
   const R = RANK[tab]; o = o || {};
@@ -966,21 +970,22 @@ function rankList(tab, o) {
     if (!(isStock(c) || (o.etf && isETF(c)))) return false;
     if (o.mk && s.m !== o.mk) return false;
     if (a.n < 60 || a.ma60 == null) return false;
-    if (R.only && !R.only(a)) return false;
-    return (a.vol20 || 0) >= (o.minV == null ? 500 : o.minV);
+    if ((a.vol20 || 0) < (o.minV == null ? 500 : o.minV)) return false;
+    return !R.only || R.only(a, c);
   });
-  list.sort((x, y) => R.key(A[y]) - R.key(A[x]));
+  list.sort((x, y) => R.key(A[y], y) - R.key(A[x], x));
   return list.slice(0, o.limit || 30);
 }
 let TAB = 'strong';
 $('#tabs').onclick = e => { const b = e.target.closest('button'); if (!b) return; TAB = b.dataset.t; $('#tabs').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); renderRank(); };
 ['#fMarket', '#fVol', '#fEtf'].forEach(s => $(s).onchange = renderRank);
 function tableHtml(list, R) {
-  if (!list.length) return '<tr><td class="empty" style="text-align:center">' + (/^(fi|it|mg)/.test(TAB) ? '還沒有法人／融資資料，排程要再跑一次才會有' : '這個條件下沒有符合的股票') + '</td></tr>';
+  if (!list.length) return '<tr><td class="empty" style="text-align:center">' + (/^(fi|it|mg)/.test(TAB) ? '還沒有法人／融資資料，排程要再跑一次才會有' : /^ai/.test(TAB) ? '目前沒有符合的股票：AI 要分數夠、而且過去相同條件的勝率也站在同一邊才會給建議' : '這個條件下沒有符合的股票') + '</td></tr>';
   return '<tr><th>股票</th><th>收盤</th><th>漲跌</th><th>' + R.col + '</th><th>判斷</th><th class="hide-sm">近 20 日</th></tr>' +
-    list.map(c => { const a = A[c], s = H.q[c]; const v = R.val(a);
+    list.map(c => { const a = A[c], s = H.q[c]; const v = R.val ? R.val(a, c) : null;
+      const cell = R.fmtv ? R.fmtv(a, c) : '<span class="' + cls(v) + '">' + (R.raw ? sgn(v, 0) : pct(v)) + '</span>';
       return '<tr class="r" data-c="' + c + '"><td><span class="n">' + esc(s.n) + '</span><span class="c">' + esc(c) + (s.m === 'tpex' ? ' 櫃' : '') + '</span></td>' +
-        '<td>' + fmt(a.c) + '</td><td class="' + cls(a.chg) + '">' + pct(a.pct) + '</td><td class="' + cls(v) + '">' + (R.raw ? sgn(v, 0) : pct(v)) + '</td>' +
+        '<td>' + fmt(a.c) + '</td><td class="' + cls(a.chg) + '">' + pct(a.pct) + '</td><td>' + cell + '</td>' +
         '<td>' + badgeHtml(a, 'tag') + '</td><td class="hide-sm"><canvas data-s="' + c + '"></canvas></td></tr>'; }).join('');
 }
 function bindTable(t) {
@@ -988,6 +993,7 @@ function bindTable(t) {
   t.querySelectorAll('tr.r').forEach(tr => tr.onclick = () => openStock(tr.dataset.c, true));
 }
 function renderRank() {
+  $('#aiHint').classList.toggle('hide', !/^ai/.test(TAB));
   const list = rankList(TAB, { mk: $('#fMarket').value, minV: +$('#fVol').value, etf: $('#fEtf').checked, limit: 30 });
   const t = $('#rankTable'); t.innerHTML = tableHtml(list, RANK[TAB]); bindTable(t);
 }
@@ -1042,7 +1048,7 @@ function seriesOf(closes) {
 }
 function buildAnalogs() {
   if (AN) return AN;
-  AN = { exact: new Map(), coarse: new Map(), n: 0 };
+  AN = { exact: new Map(), coarse: new Map(), n: 0, last: {}, cache: new Map() };
   const push = (map, k, i, c) => {
     let b = map.get(k); if (!b) { b = { r5: [], r10: [], r20: [] }; map.set(k, b); }
     HORIZ.forEach(h => { if (i + h < c.length) b['r' + h].push(c[i + h] / c[i] - 1); });
@@ -1056,8 +1062,33 @@ function buildAnalogs() {
       const g = sigAt(S.c, i, S.ma5, S.ma20, S.ma60, S.rs, S.mh); if (!g) continue;
       push(AN.exact, g.key, i, S.c); push(AN.coarse, g.coarse, i, S.c); AN.n++;
     }
+    const gl = sigAt(S.c, S.c.length - 1, S.ma5, S.ma20, S.ma60, S.rs, S.mh);   // 今天的狀態，排行要用
+    if (gl) AN.last[code] = gl;
   }
   return AN;
+}
+/* 某種狀態的全市場統計，算過就記住（排行要對兩千多檔查） */
+function mktStatsOf(g) {
+  buildAnalogs();
+  const ck = g.key + '|' + g.coarse;
+  if (AN.cache.has(ck)) return AN.cache.get(ck);
+  let bucket = AN.exact.get(g.key), mode = 'exact';
+  if (!bucket || bucket.r10.length < 60) { bucket = AN.coarse.get(g.coarse); mode = 'coarse'; }
+  const out = bucket ? { mode, sig: g, h: {} } : null;
+  if (out) HORIZ.forEach(h => out.h[h] = stats(bucket['r' + h]));
+  AN.cache.set(ck, out);
+  return out;
+}
+/* 排行用的 AI 建議：全市場相似情境＋這檔的分數。個股頁那個會再用它自己五年的歷史算一次 */
+const AIR = {};
+function aiFor(code) {
+  if (code in AIR) return AIR[code];
+  buildAnalogs();
+  const g = AN.last[code], a = A[code];
+  let r = null;
+  if (g && a) { const mk = mktStatsOf(g); if (mk && mk.h[10]) r = { ad: advise(a, { h: mk.h, useOwn: false, mkt: mk }), s10: mk.h[10], s20: mk.h[20] }; }
+  AIR[code] = r;
+  return r;
 }
 function stats(arr) {
   if (!arr || arr.length < 5) return null;
@@ -1066,15 +1097,8 @@ function stats(arr) {
 }
 /* 全市場同條件（六個條件完全相同；不到 60 筆就放寬成三個） */
 function marketAnalogs(S, L) {
-  buildAnalogs();
   const g = sigAt(S.c, L, S.ma5, S.ma20, S.ma60, S.rs, S.mh);
-  if (!g) return null;
-  let bucket = AN.exact.get(g.key), mode = 'exact';
-  if (!bucket || bucket.r10.length < 60) { bucket = AN.coarse.get(g.coarse); mode = 'coarse'; }
-  if (!bucket) return null;
-  const out = { mode, sig: g, h: {} };
-  HORIZ.forEach(h => out.h[h] = stats(bucket['r' + h]));
-  return out;
+  return g ? mktStatsOf(g) : null;
 }
 /* 這檔自己的相似情境：把每一天的技術狀態算成一組數字，標準化後找跟今天距離最近的幾天。
    只看這一檔，所以不是「條件一樣」而是「最像」，樣本才夠 */
