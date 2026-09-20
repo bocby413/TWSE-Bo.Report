@@ -300,7 +300,7 @@ details.bt{margin:6px 0}details.bt summary{cursor:pointer;font-size:12px;color:v
           <button data-t="aiLong">AI 建議做多</button><button data-t="aiShort">AI 建議做空</button><button data-t="belowFi">外資成本下買超</button><button data-t="belowIt">投信成本下買超</button><button data-t="belowDl">自營成本下買超</button>
         </div>
         <p class="hint hide" id="belowHint">條件：這個法人最近 60 個交易日是淨買超，而且現價低於他們這 60 天的進場成本（平均成本法，跟個股頁同一套）。依折價幅度排序，折越深排越前面；理論上是法人套牢、若持續買超代表他們願意往下承接，但也可能只是看錯，搭配 AI 判斷一起看。</p>
-        <p class="hint hide" id="aiHint">AI 建議排行（波段，1 個月到半年）：每檔都有自己的模型（排程每天重算）：各自從四種方法、四種波段尺度裡挑對它最賺的，出手門檻也是從它自己的歷史學出來、再用最近三成沒看過的資料當考卷驗證。今天符合自己規則、而且考卷及格的才列進來。欄位是「目標價／停損價的幅度、相似日子先碰目標的機率、考卷段平均每筆損益」，跟個股頁的 AI 判斷是同一份結果。目標與停損都來自相似日子的實際最高／最低價路徑，不是收盤中位數。不是投資建議。<span id="accAll"></span></p>
+        <p class="hint hide" id="aiHint">AI 建議排行（波段，1 個月到半年）：每檔都有自己的模型（排程每天重算）：各自從四種方法、三種相似天數（20／40／80）、四種波段尺度裡挑對它最賺的，出手門檻也是從它自己的歷史學出來、再用最近三成沒看過的資料當考卷驗證。今天符合自己規則、而且考卷及格的才列進來。欄位是「目標價／停損價的幅度、相似日子先碰目標的機率、考卷段平均每筆損益」，跟個股頁的 AI 判斷是同一份結果。目標與停損都來自相似日子的實際最高／最低價路徑，不是收盤中位數。不是投資建議。<span id="accAll"></span></p>
         <div class="filters">
           <select id="fMarket"><option value="">上市＋上櫃</option><option value="twse">只看上市</option><option value="tpex">只看上櫃</option></select>
           <select id="fVol"><option value="500">日均量 ≥ 500 張</option><option value="2000">日均量 ≥ 2000 張</option><option value="5000">日均量 ≥ 5000 張</option><option value="0">不限量</option></select>
@@ -1315,7 +1315,7 @@ function accuracyHtml(bt, d) {
   const cell = f => HORIZ.map(x => { const v = bt[String(x)]; return '<td' + (x === hz ? ' class="pick"' : '') + '>' + (v ? f(v) : '—') + '</td>'; }).join('');
   const tone = v => v >= 60 ? 'up' : v < 50 ? 'down' : '';
   let h = '<h3>這檔的成績單 <small>近 ' + (H.btDays || 750) + ' 個交易日、每 ' + (H.btStep || 10) + ' 個交易日模擬一次進場，只用當天以前的資料</small></h3>';
-  if (r) h += '<div class="rule">學出來的規則：用「' + esc(r.name || MODEL_NAME[r.mdl]) + '」看 <b>' + hName(r.h) + '</b>，相似日子先碰目標的比例 ≥ ' + r.W + '%、期望值 ≥ ' + r.edge.toFixed(1) + '%、風險報酬比 ≥ 1 才出手。練習段出手 ' + r.tr[0] + ' 次、勝率 ' + r.tr[1].toFixed(0) + '%、平均每筆 ' + pct(r.tr[2]) + '；<b>考卷' + d.hoTxt + '</b>。</div>';
+  if (r) h += '<div class="rule">學出來的規則：用「' + esc(r.name || MODEL_NAME[r.mdl]) + '」' + (r.K ? '取最像的 <b>' + r.K + ' 天</b>、' : '') + '看 <b>' + hName(r.h) + '</b>，相似日子先碰目標的比例 ≥ ' + r.W + '%、期望值 ≥ ' + r.edge.toFixed(1) + '%、風險報酬比 ≥ 1 才出手。練習段出手 ' + r.tr[0] + ' 次、勝率 ' + r.tr[1].toFixed(0) + '%、平均每筆 ' + pct(r.tr[2]) + '；<b>考卷' + d.hoTxt + '</b>。</div>';
   h += '<table class="fan"><tr><th>挑中的方法</th>' + HORIZ.map(x => '<th' + (x === hz ? ' class="pick"' : '') + '>' + x + ' 日</th>').join('') + '</tr>' +
     '<tr><td>模擬次數</td>' + cell(v => v[0]) + '</tr>' +
     '<tr><td>漲跌方向猜對</td>' + cell(v => '<span class="' + tone(v[1]) + '">' + v[1].toFixed(0) + '%</span>') + '</tr>' +
@@ -1402,7 +1402,7 @@ function aiHtml(a, an, price, bt, code) {
   } else h += '<p class="hint">資料不足 60 天，還算不出相似情境。</p>';
   h += accuracyHtml(bt, d);
   h += '<p class="hint" style="margin-top:6px">建議以最近一個交易日收盤為準，每個交易日盤後更新；若開盤後價格已離參考價 2～3% 以上，等當天盤後再看，或把目標與停損照幅度換算到實際進場價。</p>';
-  h += '<p class="hint" style="margin-top:6px">怎麼算：每檔各自試四種方法（純技術、技術＋籌碼、技術＋籌碼＋大盤、動能精簡）配 1 個月／2 個月／一季／半年四種波段，用前七成歷史挑出對它最賺的方法和出手門檻（機率、期望值都是相對它自己的波動），後三成當考卷。今天的建議就是套這檔自己學出來的規則。是統計，不是保證；碰到財報、消息面會完全不一樣。</p></div>';
+  h += '<p class="hint" style="margin-top:6px">怎麼算：每檔各自試四種方法（純技術、技術＋籌碼、技術＋籌碼＋大盤、動能精簡）× 相似日子取 20／40／80 天 × 1 個月／2 個月／一季／半年四種波段，用前七成歷史挑出對它最賺的方法和出手門檻（機率、期望值都是相對它自己的波動），後三成當考卷。今天的建議就是套這檔自己學出來的規則。是統計，不是保證；碰到財報、消息面會完全不一樣。</p></div>';
   return h;
 }
 /* 結算日：參考日往後數 n 個交易日（跳過週末；國定假日不知道，實際會再晚幾天） */
