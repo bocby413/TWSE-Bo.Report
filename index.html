@@ -297,7 +297,7 @@ details.bt{margin:6px 0}details.bt summary{cursor:pointer;font-size:12px;color:v
           <button data-t="fiBuy">外資買超</button><button data-t="fiSell">外資賣超</button><button data-t="itBuy">投信買超</button><button data-t="itSell">投信賣超</button><button data-t="dlBuy">自營商買超</button><button data-t="dlSell">自營商賣超</button><button data-t="mgUp">融資增加</button><button data-t="mgDown">融資減少</button><button data-t="msUp">融券增加</button><button data-t="msDown">融券減少</button>
           <button data-t="aiLong">AI 建議做多</button><button data-t="aiShort">AI 建議做空</button>
         </div>
-        <p class="hint hide" id="aiHint">AI 建議排行：以各檔自己五年的歷史為準（排程每天算好），找出跟今天最像的日子，10 日後的平均漲跌與勝率要跟綜合分數站在同一邊才列進來。欄位是「相似情境 10 日後平均漲跌／上漲機率／這檔回測的方向命中率」，跟個股頁的 AI 建議是同一份結果。不是投資建議。<span id="accAll"></span></p>
+        <p class="hint hide" id="aiHint">AI 建議排行：以各檔自己五年的歷史為準（排程每天算好），找出跟今天最像的日子，10 日後的平均漲跌與勝率要跟綜合分數站在同一邊，而且這檔自己的回測命中率要 ≥ 60%（至少 40 次）才列進來。欄位是「相似情境 10 日後平均漲跌／上漲機率／這檔回測的方向命中率」，跟個股頁的 AI 建議是同一份結果。不是投資建議。<span id="accAll"></span></p>
         <div class="filters">
           <select id="fMarket"><option value="">上市＋上櫃</option><option value="twse">只看上市</option><option value="tpex">只看上櫃</option></select>
           <select id="fVol"><option value="500">日均量 ≥ 500 張</option><option value="2000">日均量 ≥ 2000 張</option><option value="5000">日均量 ≥ 5000 張</option><option value="0">不限量</option></select>
@@ -1182,8 +1182,8 @@ function aiFor(code) {
     const own = ownFromHist(code);
     buildAnalogs();
     const g = AN.last[code]; const mk = g ? mktStatsOf(g) : null;
-    if (own && own.h[10] && own.h[10].n >= 8) r = { ad: advise(a, { h: own.h, useOwn: true, mkt: mk }), s10: own.h[10], s20: own.h[20], own: true };
-    else if (mk && mk.h[10]) r = { ad: advise(a, { h: mk.h, useOwn: false, mkt: mk }), s10: mk.h[10], s20: mk.h[20], own: false };
+    if (own && own.h[10] && own.h[10].n >= 8) r = { ad: advise(a, { h: own.h, useOwn: true, mkt: mk }, H.q[code].ac), s10: own.h[10], s20: own.h[20], own: true };
+    else if (mk && mk.h[10]) r = { ad: advise(a, { h: mk.h, useOwn: false, mkt: mk }, H.q[code].ac), s10: mk.h[10], s20: mk.h[20], own: false };
   }
   AIR[code] = r;
   return r;
@@ -1255,7 +1255,8 @@ const SIG_TEXT = {
   pb: ['區間低檔', '區間中段', '區間高檔'], tb: ['20 日跌逾 5%', '20 日持平', '20 日漲逾 5%'],
 };
 /* 綜合分數與歷史統計，給一個做多／觀望／做空 */
-function advise(a, an) {
+const AC_MIN_N = 40, AC_MIN_HIT = 60;   // 回測至少幾次、10 日方向命中率至少幾 % 才敢給做多／做空
+function advise(a, an, ac) {
   const s10 = an && an.h && an.h[10], s20 = an && an.h && an.h[20];
   const score = a.score, mean = s10 ? s10.mean : null, win = s10 ? s10.win : null;
   let act = 'hold', label = '觀望', tone = 't-flat', why = [];
@@ -1263,17 +1264,22 @@ function advise(a, an) {
   else if (score <= -3 && mean != null && mean < -.5 && win <= 48) { act = 'short'; label = score <= -6 && win <= 42 ? '做空／避開' : '偏空，宜減碼或觀望'; tone = score <= -6 ? 't-bear' : 't-lean-bear'; }
   else if (score >= 3) { label = '偏多但歷史勝率不高，觀望為主'; tone = 't-lean-bull'; }
   else if (score <= -3) { label = '偏空但歷史未必續跌，先觀望'; tone = 't-lean-bear'; }
+  // 準度關卡：這檔自己的回測（過去 120 天每天只用當天以前的資料預測）命中率要夠高，才真的給做多／做空
+  const acOk = ac && ac[0] >= AC_MIN_N && ac[1] >= AC_MIN_HIT;
+  let gated = null;
+  if (act !== 'hold' && !acOk) { gated = act; act = 'hold'; tone = gated === 'long' ? 't-lean-bull' : 't-lean-bear'; label = (gated === 'long' ? '條件偏多' : '條件偏空') + (ac ? '，但這檔回測命中率只有 ' + ac[1].toFixed(0) + '%，不建議' : '，回測還沒跑，先觀望'); }
   const n = s10 ? s10.n : 0;
   const agree = act === 'hold' || (act === 'long' && win >= 58) || (act === 'short' && win <= 42);
   const conf = !s10 ? '低' : (n >= 15 && agree) ? '高' : n >= 8 ? '中' : '低';
-  why.push('技術、籌碼、基本面合計 ' + (score > 0 ? '+' : '') + score + ' 分（' + a.label + '）');
+  why.push('技術、籌碼、基本面、消息面合計 ' + (score > 0 ? '+' : '') + score + ' 分（' + a.label + '）');
+  if (ac) why.push('這檔回測 ' + ac[0] + ' 次，10 日方向命中 ' + ac[1].toFixed(0) + '%、目標價碰到 ' + ac[2].toFixed(0) + '%' + (acOk ? '，達到門檻（≥ ' + AC_MIN_HIT + '%）' : '，未達門檻（≥ ' + AC_MIN_HIT + '%、≥ ' + AC_MIN_N + ' 次）'));
   if (s10) why.push((an.useOwn ? '這檔過去最像今天的 ' + n + ' 天' : '全市場過去相同條件 ' + n + ' 次') + '，10 日後平均 ' + pct(mean) + '、上漲機率 ' + win.toFixed(0) + '%' + (s20 ? '，20 日後平均 ' + pct(s20.mean) : ''));
   if (an && an.useOwn && an.mkt && an.mkt.h[10]) { const m = an.mkt.h[10]; if ((m.mean > 0) !== (mean > 0)) why.push('但全市場同條件的統計方向相反（10 日後平均 ' + pct(m.mean) + '），要保守看'); }
   if (a.fi5 != null) why.push('外資 5 日 ' + sgn(a.fi5, 0) + ' 張' + (a.it5 != null ? '、投信 ' + sgn(a.it5, 0) + ' 張' : ''));
   if (a.rsi >= 70) why.push('RSI 已過熱，追高風險高，宜等拉回');
   if (a.rsi <= 30) why.push('RSI 已超賣，空單追殺風險高');
   if (a.mg5 != null && a.mg5 > 5) why.push('融資 5 日增加 ' + a.mg5.toFixed(1) + '%，籌碼變浮');
-  return { act, label, tone, conf, why };
+  return { act, label, tone, conf, why, gated };
 }
 /* 回測結果：同一套方法放回過去 120 天，每天只用當天以前的資料預測，再對答案 */
 function accuracyHtml(bt) {
@@ -1327,7 +1333,7 @@ function drawFan(cv, price, an) {
   pts.forEach(p => { if (!p[0]) return; ctx.fillStyle = p[2] >= 0 ? '#ff5a68' : '#34d399'; ctx.textBaseline = 'bottom'; ctx.fillText(pct(p[2]), xs(p[0]), ys(p[3]) - 4); });
 }
 function aiHtml(a, an, price, bt) {
-  const ad = advise(a, an);
+  const ad = advise(a, an, bt && bt['10'] ? bt['10'] : null);
   let h = '<div class="card ai"><h2><i>✦</i>AI 建議 <small>依這檔自己的歷史統計，不是保證</small></h2>' +
     '<div class="verdict"><span class="badge ' + ad.tone + '">' + esc(ad.label) + '<small>信心 ' + ad.conf + '</small></span></div>' +
     '<ul class="why">' + ad.why.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>';

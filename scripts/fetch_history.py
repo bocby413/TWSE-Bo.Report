@@ -837,6 +837,7 @@ NEG_KW = ('跌停', '大跌', '賣超', '減碼', '調降', '下修', '下調', 
           '重摔', '爆量下跌', '崩', '砍', '減資', '掏空', '停牌', '打入全額交割')
 NEWS_TOP = 200           # 成交值前幾名的股票抓個股新聞
 NEWS_BUDGET = 240        # 個股新聞最多花幾秒
+NWH_KEEP = 500           # 每檔留幾天的新聞分數歷史
 
 
 def news_score(title):
@@ -915,7 +916,7 @@ def load_store():
                 continue
             sd = sh.get('dates') or []
             for code, s in (sh.get('q') or {}).items():
-                info[code] = {'n': s.get('n', ''), 'm': s.get('m', ''), 'f': s.get('f') or {}}
+                info[code] = {'n': s.get('n', ''), 'm': s.get('m', ''), 'f': s.get('f') or {}, 'nwh': s.get('nwh') or []}
                 # 新格式：o/h/l 放在 k 區塊、法人融資放在 x 區塊，各自有 from（在 dates 裡的起始位置）
                 cols = {}
                 for k in ('c', 'v'):
@@ -1188,8 +1189,15 @@ def main():
                 s['x'][k] = tail
         if m.get('f'):
             s['f'] = m['f']
+        nwh = list(m.get('nwh') or [])                  # 每天的新聞分數留下來（[日期, 則數, 利多, 利空]），以後回測消息面要用
         if code in snews:
             s['nw'] = snews[code]
+            if not nwh or nwh[-1][0] != dates[-1]:
+                nwh.append([dates[-1], snews[code]['n'], snews[code]['p'], snews[code]['q']])
+            else:
+                nwh[-1] = [dates[-1], snews[code]['n'], snews[code]['p'], snews[code]['q']]
+        if nwh:
+            s['nwh'] = nwh[-NWH_KEEP:]
         shards.setdefault(shard_of(code), {})[code] = s
         h = {'n': s['n'], 'm': s['m'], 'c': series['c'][hoff:], 'v': series['v'][hoff:]}
         try:
