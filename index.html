@@ -230,7 +230,7 @@ footer{margin-top:16px;font-size:11px;color:var(--txt3);line-height:1.6}
   table{font-size:12px} th,td{padding:5px 3px}
   td .c{display:block;margin:0;line-height:1.2}
 }
-.tiles.dec{grid-template-columns:repeat(3,1fr)}.tile .big{font-size:17px;font-weight:700}.tiles.dec .tile em{white-space:nowrap}.tile.dim{opacity:.55}.ai .rule{font-size:12.5px;color:var(--txt2);background:var(--panel2);border:1px solid var(--edge);border-radius:8px;padding:7px 9px;margin:6px 0}.fan td.pick,.fan th.pick{background:rgba(45,212,191,.08)}.fan tr.pick td{color:var(--txt)}
+.tiles.dec{grid-template-columns:repeat(3,1fr)}.tiles.dec .tile.due{grid-column:1 / -1;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}.tiles.dec .tile.due b{display:inline;white-space:normal}.tile .big{font-size:17px;font-weight:700}.tiles.dec .tile em{white-space:nowrap}.tile.dim{opacity:.55}.ai .rule{font-size:12.5px;color:var(--txt2);background:var(--panel2);border:1px solid var(--edge);border-radius:8px;padding:7px 9px;margin:6px 0}.fan td.pick,.fan th.pick{background:rgba(45,212,191,.08)}.fan tr.pick td{color:var(--txt)}
 .ai .entry{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:2px 0 8px;font-size:12.5px}.ai .entry input{width:110px;background:var(--panel2);border:1px solid var(--edge);border-radius:8px;color:var(--txt);padding:5px 8px;font-size:13px;margin-left:6px}
 details.bt{margin:6px 0}details.bt summary{cursor:pointer;font-size:12px;color:var(--txt2)}
 </style>
@@ -1371,7 +1371,8 @@ function aiHtml(a, an, price, bt, code) {
         '<div class="tile' + dim + '"><b>停損價</b><span class="big" id="dStop">' + fmt(d.stop) + '</span><em class="' + cls(d.S) + '">' + pct(d.S) + '</em></div>' +
         '<div class="tile"><b>先到目標的機率</b><span>' + (d.p != null ? d.p.toFixed(0) + '%' : '—') + '</span><em>門檻 ' + r.W + '%</em></div>' +
         '<div class="tile"><b>風險報酬比</b><span>' + (d.rr != null ? d.rr.toFixed(1) : '—') + '</span><em>要 ≥ 1</em></div>' +
-        '<div class="tile"><b>期望值（每筆）</b><span class="' + cls(d.ev) + '">' + pct(d.ev) + '</span><em>門檻 ' + r.edge.toFixed(1) + '%</em></div></div>' +
+        '<div class="tile"><b>期望值（每筆）</b><span class="' + cls(d.ev) + '">' + pct(d.ev) + '</span><em>門檻 ' + r.edge.toFixed(1) + '%</em></div>' +
+        '<div class="tile due"><b>結算日（最晚出場）</b><span class="big">' + esc(addTradingDays(H.dates[H.dates.length - 1], d.h).slice(5).replace('-', '/')) + '</span><em>' + hName(d.h) + '後，沒碰到目標或停損就照收盤出場</em></div></div>' +
         '<div class="entry"><label>我的進場價 <input type="number" id="myPx" step="any" placeholder="' + fmt(price) + '"></label><span class="hint" id="myPxOut">輸入實際買到的價位，目標價與停損價照幅度換算</span></div>';
     }
     const why = [];
@@ -1401,6 +1402,12 @@ function aiHtml(a, an, price, bt, code) {
   h += '<p class="hint" style="margin-top:6px">建議以最近一個交易日收盤為準，每個交易日盤後更新；若開盤後價格已離參考價 2～3% 以上，等當天盤後再看，或把目標與停損照幅度換算到實際進場價。</p>';
   h += '<p class="hint" style="margin-top:6px">怎麼算：每檔各自試四種方法（純技術、技術＋籌碼、技術＋籌碼＋大盤、動能精簡）配 1 個月／2 個月／一季／半年四種波段，用前七成歷史挑出對它最賺的方法和出手門檻（機率、期望值都是相對它自己的波動），後三成當考卷。今天的建議就是套這檔自己學出來的規則。是統計，不是保證；碰到財報、消息面會完全不一樣。</p></div>';
   return h;
+}
+/* 結算日：參考日往後數 n 個交易日（跳過週末；國定假日不知道，實際會再晚幾天） */
+function addTradingDays(dateStr, n) {
+  const d = new Date(dateStr + 'T00:00:00'); let k = 0;
+  while (k < n) { d.setDate(d.getDate() + 1); const w = d.getDay(); if (w !== 0 && w !== 6) k++; }
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 const ai_k = code => (H.q[code] && H.q[code].ai && H.q[code].ai.k) || '';
 
