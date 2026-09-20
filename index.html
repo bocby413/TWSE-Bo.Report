@@ -793,7 +793,7 @@ function makeKChart(cv, tipEl, full, span, kind) {
     const cut = arr => arr ? arr.slice(st.a, st.b) : null;
     if (kind === 'chips') drawChips(cv, tipEl, { dates: cut(full.dates), fi: cut(full.fi), it: cut(full.it), dl: cut(full.dl), mg: cut(full.mg), ms: cut(full.ms), unit: full.unit });
     else drawPrice(cv, tipEl, { dates: cut(full.dates), name: full.name, close: cut(full.close), open: cut(full.open), high: cut(full.high), low: cut(full.low), vol: cut(full.vol),
-      lines: (full.lines || []).map(l => ({ name: l.name, color: l.color, data: cut(l.data) })), hlines: full.hlines });
+      lines: (full.lines || []).map(l => ({ name: l.name, color: l.color, data: cut(l.data) })), hlines: full.hlinesFor ? full.hlinesFor(st.a, st.b) : full.hlines });
     cv._view = [st.a, st.b];
   };
   /* 連動：自己畫完，跟著畫同一段的其他圖（籌碼圖跟 K 線同步） */
@@ -837,9 +837,10 @@ function makeKChart(cv, tipEl, full, span, kind) {
 }
 /* 法人進場成本：買超那些天用「當天均價（開高低收平均，沒有就收盤）× 買超張數」加權平均。
    同時算賣超均價跟這段期間的淨買賣超，淨賣超的話成本就沒意義 */
-function costEst(s, W) {
-  // 平均成本法：照日期順序，買超的張數用當日均價加進部位，賣超時扣部位、成本不變；最後還握著的那批才是「進場成本」
-  const N = s.c.length, from = Math.max(0, N - W), out = {};
+function costEst(s, W, a, b) {
+  // 平均成本法：照日期順序，買超的張數用當日均價加進部位，賣超時扣部位、成本不變；最後還握著的那批才是「進場成本」。
+  // 給 a、b 就算 dates[a..b) 這段（K 線目前看到的區間），不然算最後 W 天
+  const N = b != null ? Math.min(b, s.c.length) : s.c.length, from = a != null ? Math.max(0, a) : Math.max(0, N - W), out = {};
   [['fi', '外資'], ['it', '投信'], ['dl', '自營商']].forEach(([k, name]) => {
     const arr = s[k]; if (!arr) return;
     let bl = 0, ba = 0, sl = 0, sa = 0, days = 0, pos = 0, cost = 0;
@@ -1485,9 +1486,9 @@ async function openStock(code, go_) {
   $('#star').onclick = () => { if (WATCH.includes(code)) WATCH = WATCH.filter(c => c !== code); else WATCH.push(code); saveWatch(); openStock(code); renderWatchHome(); };
   const f = ffill(s.c); const c = f.s; const off = f.off; const padN = arr => new Array(off).fill(null).concat(arr);
   // 60 日買超成本畫在 K 線上（只畫這段期間是淨買超的法人）
-  const ce = hasChip ? costEst(s, 60) : {};
-  const hlines = [['fi', '#fb923c', '外資成本'], ['it', '#2dd4bf', '投信成本'], ['dl', '#a78bfa', '自營成本']].filter(([k]) => ce[k] && ce[k].net > 0 && ce[k].buyCost).map(([k, color, label]) => ({ y: ce[k].buyCost, color, label }));
-  const kc = makeKChart($('#sChart'), $('#sTip'), { dates, name: '收盤', close: s.c, open: s.o, high: s.h, low: s.l, vol: s.v, hlines,
+  // 法人成本線跟 K 線看到的區間連動：拖曳、縮放、切 3 月～5 年都重算那段的平均成本（只畫淨買超的）
+  const hlinesFor = hasChip ? (a, b) => { const ce = costEst(s, 60, a, b); return [['fi', '#fb923c', '外資成本'], ['it', '#2dd4bf', '投信成本'], ['dl', '#a78bfa', '自營成本']].filter(([k]) => ce[k] && ce[k].net > 0 && ce[k].buyCost).map(([k, color, label]) => ({ y: ce[k].buyCost, color, label: label + '(' + (b - a) + '日)' })); } : null;
+  const kc = makeKChart($('#sChart'), $('#sTip'), { dates, name: '收盤', close: s.c, open: s.o, high: s.h, low: s.l, vol: s.v, hlinesFor,
     lines: [{ name: 'MA5', color: '#f5c542', data: padN(sma(c, 5)) }, { name: 'MA20', color: '#2dd4bf', data: padN(sma(c, 20)) }, { name: 'MA60', color: '#a78bfa', data: padN(sma(c, 60)) }] }, RNG);
   $('#rng').onclick = e => { const b = e.target.closest('button'); if (!b) return; RNG = +b.dataset.n; $('#rng').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); kc.set(RNG); };
   if (an && an.h && $('#fan')) drawFan($('#fan'), a.c, an);
@@ -1515,7 +1516,7 @@ function costHtml(s, price) {
   };
   const row = k => '<tr><td><span style="color:' + ({ fi: 'var(--fi)', it: 'var(--it)', dl: 'var(--dl)' }[k]) + '">' + est[1][k].name + '</span></td>' + est.map(e => cell(e[k])).join('') + '</tr>';
   return '<h3>法人進場成本（估）</h3><table class="fan cost"><tr><th></th>' + wins.map(([, t]) => '<th>' + t + '淨買賣超</th><th>' + t + '成本</th>').join('') + '</tr>' + keys.map(row).join('') + '</table>' +
-    '<p class="hint" style="margin-top:4px">成本用平均成本法估：照日期順序，買超的張數以當日均價（開高低收平均）加進部位，賣超時扣掉部位、成本不變，最後還握著的那批的平均成本才是進場成本；小字是現價相對成本。淨賣超的法人沒有「進場成本」，改列賣超均價（標「賣」）。K 線圖上的虛線是 60 日的進場成本（只畫淨買超的）。法人真正的庫存成本外界不可能知道，這只是就這段期間的買賣估算。</p>';
+    '<p class="hint" style="margin-top:4px">成本用平均成本法估：照日期順序，買超的張數以當日均價（開高低收平均）加進部位，賣超時扣掉部位、成本不變，最後還握著的那批的平均成本才是進場成本；小字是現價相對成本。淨賣超的法人沒有「進場成本」，改列賣超均價（標「賣」）。K 線圖上的虛線是「目前看到的那段區間」的進場成本（跟著拖曳、縮放、切換區間重算，只畫淨買超的）。法人真正的庫存成本外界不可能知道，這只是就這段期間的買賣估算。</p>';
 }
 
 /* 搜尋：代號開頭優先，再來是名稱包含 */
