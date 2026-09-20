@@ -31,7 +31,7 @@ HIST_KEEP = 120         # 首頁用的精簡版 history.json 只留這麼多，�
 MIN_CODES = 800         # 少於這個檔數就當抓壞了，不覆蓋舊檔
 CHIP_BACK = 1250        # 法人與融資也補五年（每天要多抓四支，第一次要好幾個小時，從最近的往回補）
 LOOKBACK = 1900         # 往回補最多幾個「日曆日」，1250 個交易日大約是 1830 個日曆日
-TIME_BUDGET = 40 * 60      # 抓資料最多幾秒，之後還要算回測、抓個股新聞、寫檔，留 20 分鐘給它們
+TIME_BUDGET = 30 * 60      # 抓資料最多幾秒，之後每檔還要挑方法、學規則、考試（約十分鐘）再寫檔
                         # 回補五年要跑好幾次接力，一次不要太長，這樣每次的結果都能早點提交出去
 TWSE_GAP = 3.5          # 證交所限速大約 5 秒 3 次，保守一點
 TPEX_GAP = 1.5
@@ -801,67 +801,214 @@ def own_analogs(closes, vols, chips=None):
 BT_DAYS = 500            # 回測最近幾個交易日（約兩年）
 BT_STEP = 5              # 每隔幾個交易日預測一次：連續每天預測會互相重疊，看起來準不代表真的準
 BT_LAST = 20             # 「預測 vs 實際」列最近幾筆（每兩個取樣一筆，等於每 10 個交易日一筆、10 日窗口不重疊）
+TRAIN_FRAC = .7          # 回測樣本前七成拿來替這檔挑方法、學門檻，後三成當考卷（沒看過的資料）
+MODELS = {               # 每檔試四種方法，特徵欄位見 _full_features
+    'A': ('純技術面', list(range(10))),
+    'B': ('技術＋籌碼', list(range(13))),
+    'C': ('技術＋籌碼＋大盤', list(range(17))),
+    'D': ('動能精簡', [6, 7, 8, 9, 13, 14, 15, 16]),
+}
+WIN_CUTS = (50, 55, 60, 65)      # 出手門檻候選：相似日子的上漲機率至少要多少（做空對稱）
+EDGE_CUTS = (0., .5, 1.)         # 預估幅度至少要是這檔平常波動的幾倍
+EDGE_FLOOR = .006                # 再怎麼樣預估幅度也要超過來回交易成本（手續費 0.1425%×2 + 證交稅 0.3%），不然不值得進場
+RR_MIN = 1.                      # 風險報酬比（預估幅度 ÷ 不利那側的四分位）至少 1 才算一次出手
 
 
-def backtest(closes, vols, highs, lows, dates, chips=None):
-    """把同一套「找相似日子」的方法放回過去每一天，只用那天以前的資料做預測，再跟實際走勢對。
-    回 {'5': [次數, 方向命中%, 目標價達成%, 平均誤差%], '10': …, '20': …, 'last': [[日期, 預估10日%, 實際%, 有沒有到], …]}"""
-    try:
-        import numpy as np
-    except ImportError:
-        return None
+def _rr(gain, adverse):
+    """gain 是往有利方向的預估幅度、adverse 是不利那側的四分位（負的代表會虧）。不利側不虧就當 9.9"""
+    return 9.9 if adverse >= 0 else gain / max(1e-4, -adverse)
+
+
+def market_feats(taiex_by_date, dates):
+    """大盤環境（每個 dates 索引一組）：加權指數對月線乖離、月線對季線、20 日漲跌。缺的補 0"""
+    tx = _ffill([taiex_by_date.get(d) for d in dates])
+    lead = len(dates) - len(tx)
+    ma20, ma60 = _sma(tx, 20), _sma(tx, 60)
+    out = []
+    for j in range(len(dates)):
+        i = j - lead
+        if i < 60 or ma60[i] is None:
+            out.append((0., 0., 0.))
+        else:
+            out.append(((tx[i] - ma20[i]) / ma20[i], (ma20[i] - ma60[i]) / ma60[i], tx[i] / tx[i - 20] - 1))
+    return out
+
+
+def _full_features(closes, vols, chips, mkt):
+    """回 (c, off, I, F)：F 每列 17 欄 —— 0-8 技術、9 量能、10-12 籌碼（沒有就 NaN）、13-15 大盤、16 六十日漲跌"""
+    import numpy as np
     c, rows = _feature_rows(closes, vols, chips)
     if len(rows) < 60:
-        return None
-    off = len(closes) - len(c)                         # c 的第 i 天是 dates 的第 i+off 天
-    L = len(c) - 1
+        return c, 0, None, None
+    off = len(closes) - len(c)
+    has_v = len(rows[0][1]) >= 10
+    has_x = len(rows[0][1]) >= 13
     I = np.array([i for i, _ in rows])
-    F = np.array([f for _, f in rows], dtype=float)
-    sd = F.std(axis=0)
-    sd[sd == 0] = 1
-    Z = F / sd
-    pos = {int(i): k for k, i in enumerate(I)}
-    hi = [(highs[i + off] if highs[i + off] is not None else c[i]) for i in range(len(c))]
-    lo = [(lows[i + off] if lows[i + off] is not None else c[i]) for i in range(len(c))]
-    res = {h: [] for h in HORIZ}
-    last = []
-    t0 = L - 5                                          # 最後一個 t+5 ≤ L 的日子，往回每 BT_STEP 天取一次
-    for t in range(t0 - ((t0 - max(60, L - BT_DAYS - 4)) // BT_STEP) * BT_STEP, t0 + 1, BT_STEP):
-        k = pos.get(t)
-        if k is None:
-            continue
-        m = int(np.searchsorted(I, t - 5, side='right'))    # 只用 t-5 以前的日子當候選（那天當下看得到的）
-        if m < 25:
-            continue
-        d = np.sqrt(((Z[:m] - Z[k]) ** 2).sum(axis=1))
-        order = np.argsort(d, kind='stable')
-        picked = _pick([(int(I[j]), 0) for j in order], min(40, max(10, m // 4)))
-        for h in HORIZ:
-            if t + h > L:
-                continue
-            st = _stats([c[i + h] / c[i] - 1 for i in picked if i + h <= t])
-            if not st:
-                continue
-            med = st[2] / 100
-            act = c[t + h] / c[t] - 1
-            tgt = c[t] * (1 + med)
-            reached = (max(hi[t + 1:t + h + 1]) >= tgt) if med >= 0 else (min(lo[t + 1:t + h + 1]) <= tgt)
-            res[h].append((med, act, reached))
-            if h == 10:
-                last.append([dates[t + off], round(med * 100, 2), round(act * 100, 2), 1 if reached else 0])
+    F = np.full((len(rows), 17), np.nan)
+    for r, (i, f) in enumerate(rows):
+        F[r, :9] = f[:9]
+        F[r, 9] = f[9] if has_v else 0.
+        if has_x:
+            F[r, 10:13] = f[10:13]
+        if mkt is not None and 0 <= i + off < len(mkt):
+            F[r, 13:16] = mkt[i + off]
+        else:
+            F[r, 13:16] = 0.
+        F[r, 16] = c[i] / c[i - 60] - 1
+    return c, off, I, F
+
+
+def _analog_stats(Z, I, k, m, c, t, L_lim, K):
+    """第 k 列（第 t 天）跟前 m 列比距離，挑最像的 K 天，回各尺度的 [n, mean, med, p25, p75, win]"""
+    import numpy as np
+    d = np.sqrt(((Z[:m] - Z[k]) ** 2).sum(axis=1))
+    top = min(len(d), 3 * K + 10)
+    idx = np.argpartition(d, top - 1)[:top] if top < len(d) else np.arange(len(d))
+    idx = idx[np.argsort(d[idx], kind='stable')]
+    picked = _pick([(int(I[j]), 0) for j in idx], K)
     out = {}
     for h in HORIZ:
-        r = res[h]
-        if len(r) < 10:
+        st = _stats([c[i + h] / c[i] - 1 for i in picked if i + h <= L_lim])
+        if st:
+            out[h] = st
+    return out, len(picked)
+
+
+def stock_model(closes, vols, highs, lows, dates, chips, mkt):
+    """替一檔股票挑方法、學門檻、考試，再給今天的建議。
+    回 (ai, bt)：ai 放進 history.json（今天的統計＋建議），bt 放進分片（回測明細）。資料不夠回 (None, None)"""
+    import numpy as np
+    c, off, I, F = _full_features(closes, vols, chips, mkt)
+    if F is None:
+        return None, None
+    L = len(c) - 1
+    if L < 200 or I[-1] != L:
+        return None, None
+    has_x = not np.isnan(F[0, 10])
+    hi = [(highs[i + off] if highs[i + off] is not None else c[i]) for i in range(len(c))]
+    lo = [(lows[i + off] if lows[i + off] is not None else c[i]) for i in range(len(c))]
+    pos = {int(i): k for k, i in enumerate(I)}
+    # 這檔平常的波動：近 250 天各尺度漲跌幅絕對值的中位數
+    sig = {}
+    for h in HORIZ:
+        a = sorted(abs(c[i] / c[i - h] - 1) for i in range(max(h, L - 250), L + 1))
+        sig[h] = a[len(a) // 2] if a else .02
+    # 取樣日：從 L-5 往回每 BT_STEP 天
+    t0 = L - 5
+    ts = list(range(t0 - ((t0 - max(60, L - BT_DAYS - 4)) // BT_STEP) * BT_STEP, t0 + 1, BT_STEP))
+    ts = [t for t in ts if t in pos]
+    if len(ts) < 40:
+        return None, None
+    n_tr = int(len(ts) * TRAIN_FRAC)
+    models = {}
+    for key, (name, cols) in MODELS.items():
+        if not has_x and key == 'B':
             continue
-        n = len(r)
-        out[str(h)] = [n, round(sum(1 for m_, a, _ in r if (m_ >= 0) == (a >= 0)) / n * 100, 1),
-                       round(sum(1 for _, _, x in r if x) / n * 100, 1),
-                       round(sum(abs(a - m_) for m_, a, _ in r) / n * 100, 2)]
-    if '10' not in out:
-        return None
-    out['last'] = last[-2 * BT_LAST::2] if len(last) >= 2 else last   # 每 10 個交易日一筆
-    return out
+        cols_use = [j for j in cols if has_x or j not in (10, 11, 12)]
+        if not has_x and key == 'C':
+            name = '技術＋大盤'
+        sub = F[:, cols_use]
+        sd = sub.std(axis=0)
+        sd[sd == 0] = 1
+        Z = sub / sd
+        K_full = min(40, max(10, len(I) // 4))
+        preds = {h: [] for h in HORIZ}                 # (t, med, win, p25, p75, actual, reached)
+        for t in ts:
+            k = pos[t]
+            m = int(np.searchsorted(I, t - 5, side='right'))
+            if m < 25:
+                continue
+            st, _ = _analog_stats(Z, I, k, m, c, t, t, min(K_full, max(10, m // 4)))
+            for h, v in st.items():
+                if t + h > L:
+                    continue
+                med = v[2] / 100
+                act = c[t + h] / c[t] - 1
+                tgt = c[t] * (1 + med)
+                reached = (max(hi[t + 1:t + h + 1]) >= tgt) if med >= 0 else (min(lo[t + 1:t + h + 1]) <= tgt)
+                preds[h].append((t, med, v[5], v[3] / 100, v[4] / 100, act, reached))
+        today, k_used = _analog_stats(Z, I, pos[L], int(np.searchsorted(I, L - 5, side='right')), c, L, L, K_full)
+        models[key] = {'name': name, 'preds': preds, 'today': today, 'k': k_used, 'n': int(np.searchsorted(I, L - 5, side='right'))}
+    # 學規則：對每個 (方法, 尺度, 勝率門檻, 幅度門檻) 在練習段算「出手後方向對的比例」，挑最好的；考卷段另外算
+    best = None
+    table = {}
+    for key, mdl in models.items():
+        table[key] = {}
+        for h in HORIZ:
+            P = mdl['preds'][h]
+            if len(P) < 30:
+                continue
+            tr = [p for p in P if p[0] <= ts[n_tr - 1]]
+            ho = [p for p in P if p[0] > ts[n_tr - 1]]
+            dir_all = sum(1 for p in P if (p[1] >= 0) == (p[5] >= 0)) / len(P) * 100
+            dir_ho = (sum(1 for p in ho if (p[1] >= 0) == (p[5] >= 0)) / len(ho) * 100) if ho else None
+            table[key][str(h)] = [len(P), round(dir_all, 1), round(dir_ho, 1) if dir_ho is not None else None]
+            for W in WIN_CUTS:
+                for E in EDGE_CUTS:
+                    edge = max(E * sig[h], EDGE_FLOOR)
+
+                    def calls(seg):
+                        out = []
+                        for p in seg:
+                            if p[2] >= W and p[1] >= edge and _rr(p[1], p[3]) >= RR_MIN:
+                                out.append(1 if p[5] > 0 else 0)
+                            elif p[2] <= 100 - W and p[1] <= -edge and _rr(-p[1], -p[4]) >= RR_MIN:
+                                out.append(1 if p[5] < 0 else 0)
+                        return out
+                    ctr, cho = calls(tr), calls(ho)
+                    if len(ctr) < 8:
+                        continue
+                    hit_tr = sum(ctr) / len(ctr)
+                    hit_ho = (sum(cho) / len(cho)) if cho else None
+                    score = (hit_tr, len(ctr), dir_all)
+                    if best is None or score > best['score']:
+                        best = {'score': score, 'mdl': key, 'h': h, 'W': W, 'E': E, 'edge': edge,
+                                'tr': [len(ctr), round(hit_tr * 100, 1)],
+                                'ho': [len(cho), round(hit_ho * 100, 1) if hit_ho is not None else None],
+                                'dir': [len(P), round(dir_all, 1), round(dir_ho, 1) if dir_ho is not None else None]}
+    if best is None:
+        return None, None
+    mdl = models[best['mdl']]
+    h = best['h']
+    ai = {'n': mdl['n'], 'k': mdl['k'], 'x': 1 if has_x else 0, 'mdl': best['mdl']}
+    for hh, v in mdl['today'].items():
+        ai[str(hh)] = v
+    rec = {'mdl': best['mdl'], 'name': mdl['name'], 'h': h, 'W': best['W'], 'E': best['E'], 'edge': round(best['edge'] * 100, 2),
+           'sig': round(sig[h] * 100, 2), 'tr': best['tr'], 'ho': best['ho'], 'dir': best['dir'], 'act': 'hold', 'why': ''}
+    tv = mdl['today'].get(h)
+    if tv:
+        med, win, p25, p75 = tv[2], tv[5], tv[3], tv[4]
+        rec.update({'med': med, 'win': win, 'p25': p25, 'p75': p75, 'ns': tv[0]})
+        edge = best['edge'] * 100
+        ok_ho = best['ho'][0] >= 5 and best['ho'][1] is not None and best['ho'][1] >= 55   # 考卷至少出手 5 次、對 55% 以上，不然規則沒被驗證過
+        rr_l, rr_s = _rr(med, p25), _rr(-med, -p75)
+        if win >= best['W'] and med >= edge:
+            ok = ok_ho and rr_l >= RR_MIN
+            rec['act'] = 'long' if ok else 'hold'
+            rec['why'] = 'ok' if ok else ('rr' if rr_l < RR_MIN else 'ho')
+            rec['rr'] = round(rr_l, 2)
+        elif win <= 100 - best['W'] and med <= -edge:
+            ok = ok_ho and rr_s >= RR_MIN
+            rec['act'] = 'short' if ok else 'hold'
+            rec['why'] = 'ok' if ok else ('rr' if rr_s < RR_MIN else 'ho')
+            rec['rr'] = round(rr_s, 2)
+        else:
+            rec['why'] = 'win' if not (win >= best['W'] or win <= 100 - best['W']) else 'edge'
+            rec['rr'] = round(rr_l if med >= 0 else rr_s, 2)
+    ai['rec'] = rec
+    # 分片：挑中的方法各尺度的準度、各方法成績表、最近 20 筆預測 vs 實際（挑中的尺度）
+    bt = {'models': table, 'mdl': best['mdl'], 'h': h}
+    for hh in HORIZ:
+        P = mdl['preds'][hh]
+        if len(P) < 10:
+            continue
+        n = len(P)
+        bt[str(hh)] = [n, round(sum(1 for p in P if (p[1] >= 0) == (p[5] >= 0)) / n * 100, 1),
+                       round(sum(1 for p in P if p[6]) / n * 100, 1), round(sum(abs(p[5] - p[1]) for p in P) / n * 100, 2)]
+    P = mdl['preds'][h]
+    last = [[dates[p[0] + off], round(p[1] * 100, 2), round(p[5] * 100, 2), 1 if p[6] else 0] for p in P]
+    bt['last'] = last[-2 * BT_LAST::2] if len(last) >= 2 else last
+    return ai, bt
 
 
 # ── 主流程 ──
@@ -1142,6 +1289,8 @@ def main():
     hist_q, shards = {}, {}
     acc = {str(h): [0, 0.0, 0.0, 0.0] for h in HORIZ}     # 全市場回測合計：[次數, 方向命中, 目標達成, 誤差]（後三個先加權）
     BT_ERR = [0]
+    n_call = {'long': 0, 'short': 0}
+    MKT = market_feats(taiex, dates)
     n20 = min(20, len(dates))
     off = len(dates) - n20
     hoff = max(0, len(dates) - HIST_KEEP)              # history.json 只留最後 HIST_KEEP 天
@@ -1167,26 +1316,27 @@ def main():
         shards.setdefault(shard_of(code), {})[code] = s
         h = {'n': s['n'], 'm': s['m'], 'c': series['c'][hoff:], 'v': series['v'][hoff:]}
         try:
-            ai = own_analogs(series['c'], series['v'], {'fi': series['fi'], 'it': series['it'], 'mg': series['mg']})
-        except Exception:
-            ai = None
-        if ai and ai.get('10'):
-            h['ai'] = ai
-        try:
-            bt = backtest(series['c'], series['v'], series['h'], series['l'], dates, {'fi': series['fi'], 'it': series['it'], 'mg': series['mg']})
+            ai, bt = stock_model(series['c'], series['v'], series['h'], series['l'], dates,
+                                 {'fi': series['fi'], 'it': series['it'], 'mg': series['mg']}, MKT)
         except Exception as e:
-            bt = None
+            ai, bt = None, None
             if BT_ERR[0] < 3:
                 BT_ERR[0] += 1
-                print('  回測 %s 失敗：%s' % (code, e), flush=True)
+                import traceback
+                print('  模型 %s 失敗：%s' % (code, traceback.format_exc()[-400:]), flush=True)
+        if ai and ai.get('10'):
+            h['ai'] = ai
         if bt:
             s['bt'] = bt
-            h['ac'] = bt['10'][:3]
+            r = ai['rec']
+            h['ac'] = [r['dir'][0], r['dir'][1], r['ho'][1] if r['ho'][1] is not None else 0]
             for hz, st in bt.items():
                 if hz in acc:
                     acc[hz][0] += st[0]
                     for j in (1, 2, 3):
                         acc[hz][j] += st[j] * st[0]
+            if r['act'] != 'hold':
+                n_call[r['act']] += 1
         for k in ('fi', 'it', 'dl', 'mg', 'ms'):
             tail = series[k][off:]
             if any(v is not None for v in tail):
@@ -1219,7 +1369,7 @@ def main():
     acc_out = {hz: [v[0], round(v[1] / v[0], 1), round(v[2] / v[0], 1), round(v[3] / v[0], 2)] for hz, v in acc.items() if v[0]}
     out = {'dates': dates[hoff:], 'updated': now.strftime('%Y-%m-%d %H:%M'), 'keep': HIST_KEEP, 'count': len(hist_q),
            'idx': {k: v[hoff:] for k, v in idx.items()}, 'chipDays': n20, 'q': hist_q, 'acc': acc_out, 'btDays': BT_DAYS, 'btStep': BT_STEP}
-    print('  回測：%s' % acc_out, flush=True)
+    print('  回測：%s；今天建議做多 %d 檔、做空 %d 檔' % (acc_out, n_call['long'], n_call['short']), flush=True)
     with open('history.json', 'w', encoding='utf-8') as fp:
         json.dump(out, fp, ensure_ascii=False, separators=(',', ':'))
     if news or not os.path.exists('news.json'):
