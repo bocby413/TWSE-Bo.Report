@@ -261,7 +261,7 @@ footer{margin-top:16px;font-size:11px;color:var(--txt3);line-height:1.6}
           <div class="card"><h2><i>◎</i>市場脈搏 <small>大盤情勢燈號</small></h2>
             <div class="gauge"><div><canvas id="gauge" height="120"></canvas><div class="gv" id="gv"></div></div><div class="subs" id="subs"></div></div>
           </div>
-          <div class="card"><h2><i>▲</i>加權指數走勢 <small>滾輪縮放、拖曳平移、雙擊還原</small></h2>
+          <div class="card"><h2><i>▲</i>加權指數走勢 <small>滾輪縮放、拖曳平移、雙擊還原</small><span class="tabs mini" id="mRng"></span></h2>
             <div class="chart"><canvas id="mChart" height="215"></canvas><div class="tip" id="mTip"></div></div>
             <div class="legend"><span><i style="background:#ff5a68"></i>K 線</span><span><i style="background:var(--ma5)"></i>MA5</span><span><i style="background:var(--ma20)"></i>MA20</span><span><i style="background:var(--ma60)"></i>MA60</span></div>
             <div class="tiles" id="mOhlc"></div>
@@ -355,6 +355,8 @@ let H = null;          // history.json
 let A = {};            // code -> analyze() 的結果，開頁時全部算好，排行跟廣度都從這裡拿
 let NEWS = null;
 let MK = null;         // 大盤算好的東西
+let IDX = null;        // idx.json：五年的加權指數開高低收（首頁大盤 K 線用）
+let MRNG = 126;        // 大盤 K 線圖看幾個交易日
 const SH = new Map();  // 分片快取 d/XX.json
 
 /* ── 指標 ── 陣列裡可能有 null（那天沒成交），先往前補值再算 */
@@ -959,9 +961,13 @@ function renderHome() {
   $('#subs').innerHTML = M.sub.map(([k, v, t]) => '<div class="sub"><b>' + k + '</b>' + (v == null ? '<small>' + t + '</small>' : '<span>' + v + '</span><small>/100 ' + t + '</small><div class="barb"><i style="width:' + v + '%"></i></div>') + '</div>').join('');
   // 走勢
   if (m) {
-    const f = ffill(M.tx); const c = f.s; const off = f.off; const padN = a => new Array(off).fill(null).concat(a);
-    makeKChart($('#mChart'), $('#mTip'), { dates: H.dates, name: '加權指數', close: M.tx, open: M.xo, high: M.xh, low: M.xl,
-      lines: [{ name: 'MA5', color: '#f5c542', data: padN(sma(c, 5)) }, { name: 'MA20', color: '#2dd4bf', data: padN(sma(c, 20)) }, { name: 'MA60', color: '#a78bfa', data: padN(sma(c, 60)) }] }, 120);
+    // 有 idx.json 就畫五年，沒有就用 history.json 裡的 120 天
+    const X = IDX && IDX.dates && IDX.dates.length > H.dates.length ? IDX : { dates: H.dates, c: M.tx, o: M.xo, h: M.xh, l: M.xl };
+    const f = ffill(X.c); const c = f.s; const off = f.off; const padN = a => new Array(off).fill(null).concat(a);
+    const mk = makeKChart($('#mChart'), $('#mTip'), { dates: X.dates, name: '加權指數', close: X.c, open: X.o, high: X.h, low: X.l,
+      lines: [{ name: 'MA5', color: '#f5c542', data: padN(sma(c, 5)) }, { name: 'MA20', color: '#2dd4bf', data: padN(sma(c, 20)) }, { name: 'MA60', color: '#a78bfa', data: padN(sma(c, 60)) }] }, MRNG);
+    $('#mRng').innerHTML = [[63, '3 月'], [126, '6 月'], [250, '1 年'], [9999, '5 年']].map(([n, t]) => '<button data-n="' + n + '"' + (n === MRNG ? ' class="on"' : '') + '>' + t + '</button>').join('');
+    $('#mRng').onclick = e => { const b = e.target.closest('button'); if (!b) return; MRNG = +b.dataset.n; $('#mRng').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); mk.set(MRNG); };
     const L = H.dates.length - 1, t = [];
     if (M.hasK && M.xo[L] != null) t.push(['開盤', fmt(M.xo[L], 2)], ['最高', fmt(M.xh[L], 2)], ['最低', fmt(M.xl[L], 2)]);
     t.push(['昨收', fmt(M.tx[L - 1], 2)], ['MA20 月線', fmt(m.ma20, 0)], ['MA60 季線', fmt(m.ma60, 0)], ['RSI', m.rsi == null ? '—' : m.rsi.toFixed(0)], ['近 20 日', '<span class="' + cls(m.ret20) + '">' + pct(m.ret20) + '</span>']);
@@ -1496,6 +1502,8 @@ async function load() {
   for (const c in H.q) { const s = H.q[c]; const a = analyze(s.c, s.v, { fi: s.fi, it: s.it, dl: s.dl, mg: s.mg, ms: s.ms, pe: s.pe, yld: s.yld }); if (a) A[c] = a; }
   $('#meta').textContent = H.dates[H.dates.length - 1] + '・' + Object.keys(H.q).length + ' 檔';
   try { const r = await fetch('news.json?_=' + BUST(), { cache: 'no-cache' }); NEWS = r.ok ? await r.json() : null; } catch (_) { NEWS = null; }
+  try { const r = await fetch('idx.json?_=' + BUST(), { cache: 'no-cache' }); IDX = r.ok ? await r.json() : null; } catch (_) { IDX = null; }
+  if (IDX && (!IDX.dates || !IDX.c || IDX.dates[IDX.dates.length - 1] !== H.dates[H.dates.length - 1])) IDX = null;   // 跟 history.json 不是同一天就不用
   computeMarket();
   $('#loading').classList.add('hide'); $('#home').classList.remove('hide');
   renderHome();

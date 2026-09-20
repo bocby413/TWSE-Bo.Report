@@ -859,7 +859,39 @@ def main():
         # 已經滿 120 個交易日了，比最舊那天還早的不用再抓，抓了也會被切掉
         start = max(start, datetime.strptime(min(days), '%Y-%m-%d').date())
 
-    # 1. 行情：缺哪天補哪天（同時決定那天是不是交易日）。
+    # 1. 加權指數的開高低：哪個月有交易日還沒有開盤指數就抓那個月（一個月一支請求）。
+    #    只有幾十支請求，放最前面，首頁的大盤 K 線最先補齊；行情補完後再跑一次，把新加的日子也補上
+    stopped = None
+
+    def fetch_index():
+        nonlocal stopped
+        trading = sorted(days)[-KEEP:]
+        months = sorted({d[:7] for d in trading[-KEEP_K:] if d not in taiex_ohl})
+        for ym in months:
+            if stopped:
+                break
+            if tick():
+                stopped = '時間到了，先寫檔，下次接著補'
+                break
+            try:
+                got_x = parse_taiex_hist(get(TWSE_X % (ym.replace('-', '') + '01'), tries=2))
+            except NetError as e:
+                print('  加權指數 %s 抓不到：%s' % (ym, e), flush=True)
+                time.sleep(TWSE_GAP)
+                continue
+            n = 0
+            for d, (o, h, l, c) in got_x.items():
+                if d in days and o is not None:
+                    taiex_ohl[d] = (o, h, l)
+                    if taiex.get(d) is None and c is not None:
+                        taiex[d] = c
+                    n += 1
+            print('  加權指數 %s：%d 天開高低' % (ym, n), flush=True)
+            time.sleep(TWSE_GAP)
+
+    fetch_index()
+
+    # 2. 行情：缺哪天補哪天（同時決定那天是不是交易日）。
     #    沒有開高低的日子（舊版檔案留下的）也重抓一次
     todo = []
     recent = set(sorted(days)[-KEEP_K:])               # 只有這些天需要開高低，更早的沒有也不用重抓
@@ -872,8 +904,10 @@ def main():
                 todo.append(day)
         day += timedelta(days=1)
     print('已有 %d 個交易日，行情要補 %d 天' % (len(days), len(todo)), flush=True)
-    got, stopped = 0, None
+    got = 0
     for day in todo:
+        if stopped:
+            break
         if tick():
             stopped = '時間到了，先寫檔，下次接著補'
             break
@@ -915,32 +949,10 @@ def main():
         print('  %s 上市 %d、上櫃 %d，加權指數 %s' % (s, len(twse), len(tpex), tx), flush=True)
         time.sleep(TWSE_GAP)
 
-    # 2. 加權指數的開高低：哪個月有交易日還沒有開盤指數就抓那個月（一個月一支請求）
-    trading = sorted(days)[-KEEP:]
-    months = sorted({d[:7] for d in trading[-KEEP_K:] if d not in taiex_ohl})
-    for ym in months:
-        if stopped:
-            break
-        if tick():
-            stopped = '時間到了，先寫檔，下次接著補'
-            break
-        try:
-            got_x = parse_taiex_hist(get(TWSE_X % (ym.replace('-', '') + '01'), tries=2))
-        except NetError as e:
-            print('  加權指數 %s 抓不到：%s' % (ym, e), flush=True)
-            time.sleep(TWSE_GAP)
-            continue
-        n = 0
-        for d, (o, h, l, c) in got_x.items():
-            if d in days and o is not None:
-                taiex_ohl[d] = (o, h, l)
-                if taiex.get(d) is None and c is not None:
-                    taiex[d] = c
-                n += 1
-        print('  加權指數 %s：%d 天開高低' % (ym, n), flush=True)
-        time.sleep(TWSE_GAP)
+    fetch_index()                                      # 剛補進來的交易日也要有指數開高低
 
     # 3. 法人與融資：最近 CHIP_BACK 個交易日裡還沒抓到的。
+    trading = sorted(days)[-KEEP:]
     #    證交所、櫃買各自記錄（i／iO、m／mO），一邊掛了不影響另一邊
     tasks = [
         ('i',  '證交所法人', lambda day: [u % day.strftime('%Y%m%d') for u in TWSE_I], parse_insti, TWSE_GAP),
@@ -1064,6 +1076,10 @@ def main():
            'TAIEXo': [clean(taiex_ohl[d][0]) if d in taiex_ohl else None for d in dates],
            'TAIEXh': [clean(taiex_ohl[d][1]) if d in taiex_ohl else None for d in dates],
            'TAIEXl': [clean(taiex_ohl[d][2]) if d in taiex_ohl else None for d in dates]}
+    with open('idx.json', 'w', encoding='utf-8') as fp:            # 首頁大盤 K 線用：五年的加權指數開高低收
+        json.dump({'dates': dates, 'updated': now.strftime('%Y-%m-%d %H:%M'), 'c': idx['TAIEX'],
+                   'o': idx['TAIEXo'], 'h': idx['TAIEXh'], 'l': idx['TAIEXl']},
+                  fp, ensure_ascii=False, separators=(',', ':'))
     with open('meta.json', 'w', encoding='utf-8') as fp:
         json.dump({'dates': dates, 'updated': now.strftime('%Y-%m-%d %H:%M'), 'keep': KEEP, 'skip': skip,
                    'done': {d: sorted(done.get(d, {'q'})) for d in dates}, 'idx': idx},
