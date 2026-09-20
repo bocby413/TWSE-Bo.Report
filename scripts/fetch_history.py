@@ -1013,7 +1013,8 @@ def stock_model(closes, vols, highs, lows, dates, chips, mkt):
     best = None
     table = {}
 
-    def trades(seg, W, edge):
+    def trades(seg, W, edge, full=False):
+        """規則在這段樣本裡真的會出手的那些筆；full=True 回完整紀錄 [t, 方向, T, S, 結果, 損益]"""
         out = []
         for r in seg:
             for key2 in ('l', 's'):
@@ -1021,7 +1022,7 @@ def stock_model(closes, vols, highs, lows, dates, chips, mkt):
                     continue
                 T, S, p, ev, w, l, pnl = r[key2]
                 if p * 100 >= W and ev >= edge and abs(T) / abs(S) >= RR_MIN:
-                    out.append(pnl)
+                    out.append([r['t'], key2, T, S, 1 if w else (-1 if l else 0), pnl] if full else pnl)
                     break
         return out
 
@@ -1095,6 +1096,20 @@ def stock_model(closes, vols, highs, lows, dates, chips, mkt):
             rec['why'] = 'p' if p * 100 < best['W'] else ('rr' if abs(T) / abs(S) < RR_MIN else 'ev')
     ai['rec'] = rec
     bt = {'models': table, 'mdl': best['mdl'], 'h': h, 'K': Kb}
+    # 規則真的出手的每一筆（練習段＋考卷段），跟成績單算的是同一批
+    P_best = mdl['preds'][(Kb, h)]
+    n_tr = int(len(P_best) * TRAIN_FRAC)
+    fired = trades(P_best[:n_tr], best['W'], best['edge'], True) + [x + ['ho'] for x in trades(P_best[n_tr:], best['W'], best['edge'], True)]
+    fired = [x if len(x) == 7 else x + ['tr'] for x in fired]
+    bt['trades'] = [[dates[x[0] + off], x[1], round(x[2] * 100, 2), round(x[3] * 100, 2), x[4], round(x[5] * 100, 2), x[6]] for x in fired][-30:]
+    summ = {}
+    for seg in ('tr', 'ho'):
+        xs = [x for x in fired if x[6] == seg]
+        if xs:
+            n = len(xs)
+            summ[seg] = [n, round(sum(1 for x in xs if x[5] > 0) / n * 100, 1), round(sum(x[5] for x in xs) / n * 100, 2),
+                         round(sum(1 for x in xs if x[4] == 1) / n * 100, 1), round(sum(1 for x in xs if x[4] == -1) / n * 100, 1), round(sum(1 for x in xs if x[4] == 0) / n * 100, 1)]
+    bt['sum'] = summ
     for hh in HORIZ:
         P = mdl['preds'][(Kb, hh)]
         if len(P) < 10:

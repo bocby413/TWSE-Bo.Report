@@ -1313,28 +1313,26 @@ const SIG_TEXT = {
 function accuracyHtml(bt, d) {
   if (!bt || !bt.models) return '<p class="hint" style="margin-top:6px">成績單：排程下次跑完才會有。</p>';
   const r = d && d.r; const hz = bt.h || 10;
-  const cell = f => HORIZ.map(x => { const v = bt[String(x)]; return '<td' + (x === hz ? ' class="pick"' : '') + '>' + (v ? f(v) : '—') + '</td>'; }).join('');
   const tone = v => v >= 60 ? 'up' : v < 50 ? 'down' : '';
-  let h = '<h3>這檔的成績單 <small>近 ' + (H.btDays || 750) + ' 個交易日、每 ' + (H.btStep || 10) + ' 個交易日模擬一次進場，只用當天以前的資料</small></h3>';
-  if (r) h += '<div class="rule">學出來的規則：用「' + esc(r.name || MODEL_NAME[r.mdl]) + '」' + (r.K ? '取最像的 <b>' + r.K + ' 天</b>、' : '') + '看 <b>' + hName(r.h) + '</b>，相似日子先碰目標的比例 ≥ ' + r.W + '%、期望值 ≥ ' + r.edge.toFixed(1) + '%、風險報酬比 ≥ 1 才出手。練習段出手 ' + r.tr[0] + ' 次、勝率 ' + r.tr[1].toFixed(0) + '%、平均每筆 ' + pct(r.tr[2]) + '；<b>考卷' + d.hoTxt + '</b>。</div>';
-  h += '<table class="fan"><tr><th>挑中的方法</th>' + HORIZ.map(x => '<th' + (x === hz ? ' class="pick"' : '') + '>' + x + ' 日</th>').join('') + '</tr>' +
-    '<tr><td>模擬次數</td>' + cell(v => v[0]) + '</tr>' +
-    '<tr><td>漲跌方向猜對</td>' + cell(v => '<span class="' + tone(v[1]) + '">' + v[1].toFixed(0) + '%</span>') + '</tr>' +
-    '<tr><td>做多：先到目標</td>' + cell(v => v[2] == null ? '—' : v[2].toFixed(0) + '%') + '</tr>' +
-    '<tr><td>做多：先到停損</td>' + cell(v => v[3] == null ? '—' : v[3].toFixed(0) + '%') + '</tr>' +
-    '<tr><td>做多：平均每筆</td>' + cell(v => v[4] == null ? '—' : '<span class="' + cls(v[4]) + '">' + pct(v[4]) + '</span>') + '</tr></table>';
-  h += '<details class="bt"><summary>四種方法比較（整體方向命中／考卷段）</summary><table class="fan"><tr><th></th>' + HORIZ.map(x => '<th>' + x + ' 日</th>').join('') + '</tr>' +
-    Object.keys(bt.models).map(k => '<tr' + (k === bt.mdl ? ' class="pick"' : '') + '><td>' + esc(MODEL_NAME[k] || k) + (k === bt.mdl ? ' ★' : '') + '</td>' + HORIZ.map(x => { const v = bt.models[k][String(x)]; return '<td>' + (v ? v[1].toFixed(0) + '%／' + (v[2] == null ? '—' : v[2].toFixed(0) + '%') : '—') + '</td>'; }).join('') + '</tr>').join('') + '</table></details>';
-  if (bt.last && bt.last.length) {
-    const res = x => x[3] === 1 ? '<span class="up">先到目標</span>' : x[3] === -1 ? '<span class="down">先到停損</span>' : '到期結算';
-    const opn = (bt.open || []).map(x => '<tr class="open"><td>' + esc(x[0]) + '</td><td>' + (x[5] === 's' ? '放空' : '做多') + '</td><td class="up">' + pct(x[1]) + '</td><td class="down">' + pct(x[2]) + '</td><td>' + (x[3] === 1 ? '<span class="up">已到目標</span>' : x[3] === -1 ? '<span class="down">已到停損</span>' : '進行中・剩 ' + x[6] + ' 日') + '</td><td class="' + cls(x[4]) + '">' + pct(x[4]) + (x[3] ? '' : '<small>（目前）</small>') + '</td></tr>').join('');
-    h += '<details class="bt"><summary>最近 ' + bt.last.length + ' 次 ' + hName(hz) + ' 模擬進場（每 20 個交易日一筆）' + (bt.open && bt.open.length ? '，另有 ' + bt.open.length + ' 筆還沒到期' : '') + '</summary>' +
-      (bt.open && bt.open.length ? '<p class="hint">還沒到期的（' + hName(hz) + '要走完才有結果，所以對完答案的最新一筆會是 ' + hName(hz).replace(/（.*/, '') + '前）：</p>' : '') +
-      '<table class="fan"><tr><th>進場日</th><th>方向</th><th>目標</th><th>停損</th><th>結果</th><th>損益</th></tr>' + opn +
-      (opn ? '<tr><td colspan="6" style="color:var(--txt3);font-size:11px;padding-top:8px">已對完答案的：</td></tr>' : '') +
-      bt.last.slice().reverse().map(x => '<tr><td>' + esc(x[0]) + '</td><td>' + (x[5] === 's' ? '放空' : '做多') + '</td><td class="up">' + pct(x[1]) + '</td><td class="down">' + pct(x[2]) + '</td><td>' + res(x) + '</td><td class="' + cls(x[4]) + '">' + pct(x[4]) + '</td></tr>').join('') + '</table></details>';
+  let h = '<h3>這檔的成績單 <small>近 ' + (H.btDays || 750) + ' 個交易日，站在過去每一天只用當天以前的資料判斷，符合規則才進場</small></h3>';
+  if (r) h += '<div class="rule">學出來的規則：用「' + esc(r.name || MODEL_NAME[r.mdl]) + '」' + (r.K ? '取最像的 <b>' + r.K + ' 天</b>、' : '') + '看 <b>' + hName(r.h) + '</b>，相似日子先碰目標的比例 ≥ ' + r.W + '%、期望值 ≥ ' + r.edge.toFixed(1) + '%、風險報酬比 ≥ 1 才出手。</div>';
+  if (bt.sum && (bt.sum.tr || bt.sum.ho)) {
+    const row = (name, v, cls2) => '<tr class="' + cls2 + '"><td>' + name + '</td>' + (v ? '<td>' + v[0] + '</td><td><span class="' + tone(v[1]) + '">' + v[1].toFixed(0) + '%</span></td><td class="' + cls(v[2]) + '">' + pct(v[2]) + '</td><td>' + v[3].toFixed(0) + '%</td><td>' + v[4].toFixed(0) + '%</td><td>' + v[5].toFixed(0) + '%</td>' : '<td colspan="6">一次都沒出手</td>') + '</tr>';
+    h += '<table class="fan"><tr><th></th><th>出手</th><th>勝率</th><th>平均每筆</th><th>先到目標</th><th>先到停損</th><th>到期</th></tr>' +
+      row('練習段（挑規則用）', bt.sum.tr, '') + row('<b>考卷段（沒看過）</b>', bt.sum.ho, 'pick') + '</table>' +
+      '<p class="hint">練習段的成績是挑規則時看過的，偏樂觀；考卷段才是真的。考卷出手不到 5 次、勝率不到 55% 或平均沒賺，決策卡就不會給進場。</p>';
   }
-  h += '<p class="hint">每次模擬都是站在那一天、只用那天以前的資料算出目標與停損，再看之後實際走勢先碰到哪一個（同一天碰到算停損，都沒碰到就到期用收盤結算）。考卷是最近三成的樣本，挑方法、學門檻時完全沒用到。</p>';
+  const res = x => x[4] === 1 ? '<span class="up">先到目標</span>' : x[4] === -1 ? '<span class="down">先到停損</span>' : '到期結算';
+  const opn = (bt.open || []).map(x => '<tr class="open"><td>' + esc(x[0]) + '</td><td>' + (x[5] === 's' ? '放空' : '做多') + '</td><td class="up">' + pct(x[1]) + '</td><td class="down">' + pct(x[2]) + '</td><td>' + (x[3] === 1 ? '<span class="up">已到目標</span>' : x[3] === -1 ? '<span class="down">已到停損</span>' : '進行中・剩 ' + x[6] + ' 日') + '</td><td class="' + cls(x[4]) + '">' + pct(x[4]) + (x[3] ? '' : '<small>（目前）</small>') + '</td><td>—</td></tr>').join('');
+  if ((bt.trades && bt.trades.length) || opn) {
+    h += '<details class="bt"><summary>規則出手的每一筆（最近 ' + (bt.trades || []).length + ' 筆已對完答案' + (bt.open && bt.open.length ? '、' + bt.open.length + ' 筆還沒到期' : '') + '）</summary>' +
+      '<table class="fan"><tr><th>進場日</th><th>方向</th><th>目標</th><th>停損</th><th>結果</th><th>損益</th><th>段</th></tr>' + opn +
+      (bt.trades || []).slice().reverse().map(x => '<tr><td>' + esc(x[0]) + '</td><td>' + (x[1] === 's' ? '放空' : '做多') + '</td><td class="up">' + pct(x[2]) + '</td><td class="down">' + pct(x[3]) + '</td><td>' + res(x) + '</td><td class="' + cls(x[5]) + '">' + pct(x[5]) + '</td><td>' + (x[6] === 'ho' ? '<b>考卷</b>' : '練習') + '</td></tr>').join('') + '</table>' +
+      '<p class="hint">每一筆都是站在那天、只用那天以前的資料算出目標與停損，而且那天符合這檔的規則才進場；之後看實際走勢先碰到哪個（同一天都碰到算停損，都沒碰到就到期用收盤結算）。' + (hz >= 40 ? hName(hz).replace(/（.*/, '') + '要走完才有結果，所以對完答案的最新一筆會比較早。' : '') + '</p></details>';
+  }
+  h += '<details class="bt"><summary>參考：四種方法比較（每 10 天無條件看一次的方向猜對率，整體／考卷段）</summary><table class="fan"><tr><th></th>' + HORIZ.map(x => '<th>' + x + ' 日</th>').join('') + '</tr>' +
+    Object.keys(bt.models).map(k => '<tr' + (k === bt.mdl ? ' class="pick"' : '') + '><td>' + esc(MODEL_NAME[k] || k) + (k === bt.mdl ? ' ★' : '') + '</td>' + HORIZ.map(x => { const v = bt.models[k][String(x)]; return '<td>' + (v ? v[1].toFixed(0) + '%／' + (v[2] == null ? '—' : v[2].toFixed(0) + '%') : '—') + '</td>'; }).join('') + '</tr>').join('') + '</table>' +
+    '<p class="hint">這不是規則的成績，只是把四種方法放在同一把尺上比：不管條件、每 10 個交易日看一次「相似日子的中位數方向」猜對了沒。打 ★ 的是挑中的方法（挑選標準是練習段出手的平均每筆損益，不是這個猜對率）。</p></details>';
   return h;
 }
 const pct1 = v => v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
