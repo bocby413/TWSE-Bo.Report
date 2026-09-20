@@ -973,6 +973,12 @@ def main():
                 stopped = '時間到了，先寫檔，下次接著補'
                 break
             rows, reached = try_urls(urls(day), parse, gap, diag=name)
+            for wait in (60, 120, 180):                 # 被擋（回 HTML）多半是問太密，歇一下再試，不要整段放棄
+                if reached or tick():
+                    break
+                print('  %s %s回的不是資料，休息 %d 秒再試' % (s, name, wait), flush=True)
+                time.sleep(wait)
+                rows, reached = try_urls(urls(day), parse, gap, diag=name)
             if not reached:
                 stopped = '%s %s連不上' % (s, name)
                 break
