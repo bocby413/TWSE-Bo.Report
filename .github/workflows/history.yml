@@ -25,6 +25,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - run: pip install -q numpy
       - name: 同步到最新的 main
         # 排在佇列裡的 run 會用「按下去那一刻」的版本，前一次的資料已經推上去了它不知道，
         # 接著會從舊資料開始補、最後提交又撞車。先拉到最新再跑

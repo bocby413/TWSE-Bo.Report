@@ -31,7 +31,7 @@ HIST_KEEP = 120         # 首頁用的精簡版 history.json 只留這麼多，�
 MIN_CODES = 800         # 少於這個檔數就當抓壞了，不覆蓋舊檔
 CHIP_BACK = 1250        # 法人與融資也補五年（每天要多抓四支，第一次要好幾個小時，從最近的往回補）
 LOOKBACK = 1900         # 往回補最多幾個「日曆日」，1250 個交易日大約是 1830 個日曆日
-TIME_BUDGET = 45 * 60   # 跑超過這個秒數就先收工寫檔，下次接著補（Actions 的 timeout 設 60 分）。
+TIME_BUDGET = 40 * 60      # 抓資料最多幾秒，之後還要算回測、抓個股新聞、寫檔，留 20 分鐘給它們
                         # 回補五年要跑好幾次接力，一次不要太長，這樣每次的結果都能早點提交出去
 TWSE_GAP = 3.5          # 證交所限速大約 5 秒 3 次，保守一點
 TPEX_GAP = 1.5
@@ -701,12 +701,12 @@ def _stats(arr):
             round(sum(1 for v in s if v > 0) / n * 100, 1)]
 
 
-def own_analogs(closes, vols):
-    """回 {'n': 候選天數, 'k': 取幾天, '5': [n, 平均%, 中位%, p25%, p75%, 勝率%], '10': …, '20': …}，資料不夠回 None"""
+def _feature_rows(closes, vols):
+    """回 (補值後的收盤 c, [(i, 特徵向量)…])。特徵：乖離、均線間距、月線斜率、RSI、MACD、區間位置、5／20 日動能、量能"""
     c = _ffill(closes)
     L = len(c) - 1
     if L < 60:
-        return None
+        return c, []
     ma5, ma20, ma60 = _sma(c, 5), _sma(c, 20), _sma(c, 60)
     rs, mh = _rsi_series(c, 14), _macd_hist(c)
     vr = None
@@ -730,7 +730,24 @@ def own_analogs(closes, vols):
         return f
 
     rows = [(i, feat(i)) for i in range(60, L + 1)]
-    rows = [(i, f) for i, f in rows if f]
+    return c, [(i, f) for i, f in rows if f]
+
+
+def _pick(cand, K):
+    """cand 是 (i, 距離) 由近到遠；相鄰 3 天內只挑一個，避免同一段行情重複算"""
+    picked = []
+    for i, _ in cand:
+        if all(abs(j - i) >= 3 for j in picked):
+            picked.append(i)
+        if len(picked) >= K:
+            break
+    return picked
+
+
+def own_analogs(closes, vols):
+    """回 {'n': 候選天數, 'k': 取幾天, '5': [n, 平均%, 中位%, p25%, p75%, 勝率%], '10': …, '20': …}，資料不夠回 None"""
+    c, rows = _feature_rows(closes, vols)
+    L = len(c) - 1
     cur = next((f for i, f in rows if i == L), None)
     if cur is None or len(rows) < 25:
         return None
@@ -739,18 +756,122 @@ def own_analogs(closes, vols):
     sd = [(sum((f[k] - mean[k]) ** 2 for _, f in rows) / len(rows)) ** .5 or 1 for k in range(dim)]
     dist = lambda f: sum(((f[k] - cur[k]) / sd[k]) ** 2 for k in range(dim)) ** .5
     cand = sorted(((i, dist(f)) for i, f in rows if i <= L - 5), key=lambda x: x[1])
-    K = min(40, max(10, len(cand) // 4))
-    picked = []
-    for i, d in cand:
-        if all(abs(j - i) >= 3 for j in picked):
-            picked.append(i)
-        if len(picked) >= K:
-            break
+    picked = _pick(cand, min(40, max(10, len(cand) // 4)))
     out = {'n': len(cand), 'k': len(picked)}
     for h in HORIZ:
         st = _stats([c[i + h] / c[i] - 1 for i in picked if i + h <= L])
         if st:
             out[str(h)] = st
+    return out
+
+
+BT_DAYS = 120            # 回測最近幾個交易日的預測
+
+
+def backtest(closes, vols, highs, lows, dates):
+    """把同一套「找相似日子」的方法放回過去每一天，只用那天以前的資料做預測，再跟實際走勢對。
+    回 {'5': [次數, 方向命中%, 目標價達成%, 平均誤差%], '10': …, '20': …, 'last': [[日期, 預估10日%, 實際%, 有沒有到], …]}"""
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    c, rows = _feature_rows(closes, vols)
+    if len(rows) < 60:
+        return None
+    off = len(closes) - len(c)                         # c 的第 i 天是 dates 的第 i+off 天
+    L = len(c) - 1
+    I = np.array([i for i, _ in rows])
+    F = np.array([f for _, f in rows], dtype=float)
+    sd = F.std(axis=0)
+    sd[sd == 0] = 1
+    Z = F / sd
+    pos = {int(i): k for k, i in enumerate(I)}
+    hi = [(highs[i + off] if highs[i + off] is not None else c[i]) for i in range(len(c))]
+    lo = [(lows[i + off] if lows[i + off] is not None else c[i]) for i in range(len(c))]
+    res = {h: [] for h in HORIZ}
+    last = []
+    for t in range(max(60, L - BT_DAYS - 4), L - 4):    # t+5 ≤ L 才有答案可對
+        k = pos.get(t)
+        if k is None:
+            continue
+        m = int(np.searchsorted(I, t - 5, side='right'))    # 只用 t-5 以前的日子當候選（那天當下看得到的）
+        if m < 25:
+            continue
+        d = np.sqrt(((Z[:m] - Z[k]) ** 2).sum(axis=1))
+        order = np.argsort(d, kind='stable')
+        picked = _pick([(int(I[j]), 0) for j in order], min(40, max(10, m // 4)))
+        for h in HORIZ:
+            if t + h > L:
+                continue
+            st = _stats([c[i + h] / c[i] - 1 for i in picked if i + h <= t])
+            if not st:
+                continue
+            med = st[2] / 100
+            act = c[t + h] / c[t] - 1
+            tgt = c[t] * (1 + med)
+            reached = (max(hi[t + 1:t + h + 1]) >= tgt) if med >= 0 else (min(lo[t + 1:t + h + 1]) <= tgt)
+            res[h].append((med, act, reached))
+            if h == 10:
+                last.append([dates[t + off], round(med * 100, 2), round(act * 100, 2), 1 if reached else 0])
+    out = {}
+    for h in HORIZ:
+        r = res[h]
+        if len(r) < 10:
+            continue
+        n = len(r)
+        out[str(h)] = [n, round(sum(1 for m_, a, _ in r if (m_ >= 0) == (a >= 0)) / n * 100, 1),
+                       round(sum(1 for _, _, x in r if x) / n * 100, 1),
+                       round(sum(abs(a - m_) for m_, a, _ in r) / n * 100, 2)]
+    if '10' not in out:
+        return None
+    out['last'] = last[-10:]
+    return out
+
+
+# ── 個股新聞：Google News 近 7 天，用關鍵字粗分利多／利空 ──
+POS_KW = ('創新高', '創高', '新高', '漲停', '大漲', '買超', '加碼', '調升', '上修', '上調', '成長', '轉盈', '獲利', '接單',
+          '訂單', '擴產', '利多', '看好', '強勁', '大單', '庫藏股', '填息', '年增', '季增', '轉強', '突破', '衝高', '走高',
+          '攻頂', '飆', '亮眼', '報喜', '搶進', '布局', '受惠')
+NEG_KW = ('跌停', '大跌', '賣超', '減碼', '調降', '下修', '下調', '衰退', '虧損', '虧', '利空', '看壞', '疲弱', '裁員', '訴訟',
+          '違約', '罰款', '處分', '警示', '注意股', '重挫', '走弱', '跌破', '下滑', '年減', '季減', '停工', '召回', '摔',
+          '重摔', '爆量下跌', '崩', '砍', '減資', '掏空', '停牌', '打入全額交割')
+NEWS_TOP = 200           # 成交值前幾名的股票抓個股新聞
+NEWS_BUDGET = 240        # 個股新聞最多花幾秒
+
+
+def news_score(title):
+    p = any(k in title for k in POS_KW)
+    n = any(k in title for k in NEG_KW)
+    return (1 if p else 0) - (1 if n else 0)
+
+
+def fetch_stock_news(cands):
+    """cands: [(代號, 名稱)…]。回 {代號: {'n': 則數, 'p': 利多, 'q': 利空, 'i': [[標題, 連結, 日期, 來源, 分數]…]}}"""
+    t0 = time.time()
+    out = {}
+    for code, name in cands:
+        if time.time() - t0 > NEWS_BUDGET:
+            print('  個股新聞時間到，抓了 %d 檔' % len(out), flush=True)
+            break
+        q = '"%s" when:7d' % name
+        url = ('https://news.google.com/rss/search?q=%s&hl=zh-TW&gl=TW&ceid=TW:zh-Hant' % urllib.parse.quote(q))
+        try:
+            raw = fetch_raw(url, tries=1, timeout=20)
+            root = ElementTree.fromstring(raw.encode('utf-8'))
+        except Exception as e:
+            print('  個股新聞 %s 抓不到：%s' % (code, str(e)[:60]), flush=True)
+            time.sleep(1)
+            continue
+        items = []
+        for it in list(root.iter('item'))[:15]:
+            t = html.unescape(it.findtext('title') or '')
+            if not t or name not in t:                 # 標題裡要有這檔的名字，不然常常是別檔的新聞
+                continue
+            items.append([t, it.findtext('link') or '', it.findtext('pubDate') or '', it.findtext('source') or '', news_score(t)])
+        if items:
+            out[code] = {'n': len(items), 'p': sum(1 for x in items if x[4] > 0), 'q': sum(1 for x in items if x[4] < 0), 'i': items[:6]}
+        time.sleep(.3)
+    print('  個股新聞：%d 檔有新聞（%.0f 秒）' % (len(out), time.time() - t0), flush=True)
     return out
 
 
@@ -1022,6 +1143,18 @@ def main():
         news = fetch_news()
     except Exception as e:
         print('  新聞整個失敗：%s' % e, flush=True)
+    # 成交值前 NEWS_TOP 名抓個股新聞
+    snews = {}
+    try:
+        lastd = sorted(days)[-1]
+        turn = []
+        for code, row in days[lastd].items():
+            if code in info and row.get('c') and row.get('v') and info[code].get('n'):
+                turn.append((row['c'] * row['v'], code))
+        turn.sort(reverse=True)
+        snews = fetch_stock_news([(code, info[code]['n']) for _, code in turn[:NEWS_TOP]])
+    except Exception as e:
+        print('  個股新聞整個失敗：%s' % e, flush=True)
 
     # 5. 寫檔
     dates = sorted(days)[-KEEP:]
@@ -1031,6 +1164,8 @@ def main():
         print('::warning::這次只有 %d 檔，怪怪的，不覆蓋舊檔' % len(codes), flush=True)
         return
     hist_q, shards = {}, {}
+    acc = {str(h): [0, 0.0, 0.0, 0.0] for h in HORIZ}     # 全市場回測合計：[次數, 方向命中, 目標達成, 誤差]（後三個先加權）
+    BT_ERR = [0]
     n20 = min(20, len(dates))
     off = len(dates) - n20
     hoff = max(0, len(dates) - HIST_KEEP)              # history.json 只留最後 HIST_KEEP 天
@@ -1053,6 +1188,8 @@ def main():
                 s['x'][k] = tail
         if m.get('f'):
             s['f'] = m['f']
+        if code in snews:
+            s['nw'] = snews[code]
         shards.setdefault(shard_of(code), {})[code] = s
         h = {'n': s['n'], 'm': s['m'], 'c': series['c'][hoff:], 'v': series['v'][hoff:]}
         try:
@@ -1061,6 +1198,23 @@ def main():
             ai = None
         if ai and ai.get('10'):
             h['ai'] = ai
+        try:
+            bt = backtest(series['c'], series['v'], series['h'], series['l'], dates)
+        except Exception as e:
+            bt = None
+            if BT_ERR[0] < 3:
+                BT_ERR[0] += 1
+                print('  回測 %s 失敗：%s' % (code, e), flush=True)
+        if bt:
+            s['bt'] = bt
+            h['ac'] = bt['10'][:3]
+            for hz, st in bt.items():
+                if hz in acc:
+                    acc[hz][0] += st[0]
+                    for j in (1, 2, 3):
+                        acc[hz][j] += st[j] * st[0]
+        if code in snews:
+            h['nw'] = [snews[code]['n'], snews[code]['p'], snews[code]['q']]
         for k in ('fi', 'it', 'dl', 'mg', 'ms'):
             tail = series[k][off:]
             if any(v is not None for v in tail):
@@ -1090,8 +1244,10 @@ def main():
         json.dump({'dates': dates, 'updated': now.strftime('%Y-%m-%d %H:%M'), 'keep': KEEP, 'skip': skip,
                    'done': {d: sorted(done.get(d, {'q'})) for d in dates}, 'idx': idx},
                   fp, ensure_ascii=False, separators=(',', ':'))
+    acc_out = {hz: [v[0], round(v[1] / v[0], 1), round(v[2] / v[0], 1), round(v[3] / v[0], 2)] for hz, v in acc.items() if v[0]}
     out = {'dates': dates[hoff:], 'updated': now.strftime('%Y-%m-%d %H:%M'), 'keep': HIST_KEEP, 'count': len(hist_q),
-           'idx': {k: v[hoff:] for k, v in idx.items()}, 'chipDays': n20, 'q': hist_q}
+           'idx': {k: v[hoff:] for k, v in idx.items()}, 'chipDays': n20, 'q': hist_q, 'acc': acc_out, 'btDays': BT_DAYS}
+    print('  回測：%s' % acc_out, flush=True)
     with open('history.json', 'w', encoding='utf-8') as fp:
         json.dump(out, fp, ensure_ascii=False, separators=(',', ':'))
     if news or not os.path.exists('news.json'):

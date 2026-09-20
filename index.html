@@ -186,7 +186,7 @@ h3{font-size:12.5px;color:var(--txt2);font-weight:600;margin:10px 0 4px}
 .ai{border-color:rgba(45,212,191,.35);background:linear-gradient(180deg,rgba(45,212,191,.06),transparent 40%),var(--panel)}
 .ai .why{list-style:none;display:grid;gap:3px;font-size:12.5px;color:var(--txt2)}
 .ai .why li:before{content:'·';color:var(--accent);margin-right:6px}
-table.fan{margin-top:4px} table.fan td:first-child{color:var(--txt3);font-size:12px} table.fan td{padding:5px 4px;font-size:12.5px}
+table.fan{margin-top:4px;width:100%;table-layout:fixed}.fan td:first-child,.fan th:first-child{width:5.4em} table.fan td:first-child{color:var(--txt3);font-size:12px} table.fan td{padding:5px 3px;font-size:12px;white-space:normal;word-break:break-word}
 table.cost td:first-child{font-weight:600;font-size:12.5px}
 .hint{font-size:12px;color:var(--txt3)}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 8px}
@@ -230,6 +230,8 @@ footer{margin-top:16px;font-size:11px;color:var(--txt3);line-height:1.6}
   table{font-size:12px} th,td{padding:5px 3px}
   td .c{display:block;margin:0;line-height:1.2}
 }
+.snews{list-style:none;margin:0 0 8px;padding:0}.snews li{display:flex;gap:6px;align-items:baseline;padding:4px 0;border-bottom:1px solid var(--edge);font-size:12.5px;flex-wrap:wrap}.snews a{color:var(--txt);text-decoration:none;flex:1;min-width:0}.snews a:hover{color:var(--accent)}.snews small{color:var(--txt3);white-space:nowrap}.ntag{font-size:10.5px;padding:1px 6px;border-radius:6px;background:rgba(255,255,255,.06);color:var(--txt3);white-space:nowrap}.ntag.up{background:rgba(255,90,104,.15)}.ntag.down{background:rgba(52,211,153,.15)}
+details.bt{margin:6px 0}details.bt summary{cursor:pointer;font-size:12px;color:var(--txt2)}
 </style>
 </head>
 <body>
@@ -295,7 +297,7 @@ footer{margin-top:16px;font-size:11px;color:var(--txt3);line-height:1.6}
           <button data-t="fiBuy">外資買超</button><button data-t="fiSell">外資賣超</button><button data-t="itBuy">投信買超</button><button data-t="itSell">投信賣超</button><button data-t="dlBuy">自營商買超</button><button data-t="dlSell">自營商賣超</button><button data-t="mgUp">融資增加</button><button data-t="mgDown">融資減少</button><button data-t="msUp">融券增加</button><button data-t="msDown">融券減少</button>
           <button data-t="aiLong">AI 建議做多</button><button data-t="aiShort">AI 建議做空</button>
         </div>
-        <p class="hint hide" id="aiHint">AI 建議排行：以各檔自己五年的歷史為準（排程每天算好），找出跟今天最像的日子，10 日後的平均漲跌與勝率要跟綜合分數站在同一邊才列進來。欄位是「相似情境 10 日後平均漲跌／上漲機率」，跟個股頁的 AI 建議是同一份結果。不是投資建議。</p>
+        <p class="hint hide" id="aiHint">AI 建議排行：以各檔自己五年的歷史為準（排程每天算好），找出跟今天最像的日子，10 日後的平均漲跌與勝率要跟綜合分數站在同一邊才列進來。欄位是「相似情境 10 日後平均漲跌／上漲機率／這檔回測的方向命中率」，跟個股頁的 AI 建議是同一份結果。不是投資建議。<span id="accAll"></span></p>
         <div class="filters">
           <select id="fMarket"><option value="">上市＋上櫃</option><option value="twse">只看上市</option><option value="tpex">只看上櫃</option></select>
           <select id="fVol"><option value="500">日均量 ≥ 500 張</option><option value="2000">日均量 ≥ 2000 張</option><option value="5000">日均量 ≥ 5000 張</option><option value="0">不限量</option></select>
@@ -537,6 +539,15 @@ function analyze(closes, vols, x) {
     const ratio = r.ms / r.mg * 100;
     if (ratio >= 20) r.reasons.push({ pts: 0, text: '券資比 ' + ratio.toFixed(1) + '%（融券 ' + fmt(r.ms, 0) + ' 張），空單多，急漲會軋空', note: true });
     else if (r.ms5 != null && r.ms5 > 30 && r.ms >= 100) r.reasons.push({ pts: 0, text: '融券 5 日增加 ' + r.ms5.toFixed(0) + '%（' + fmt(r.ms, 0) + ' 張），有人在放空', note: true });
+  }
+  // ── 消息面：近 7 天新聞用關鍵字粗分利多／利空（排程抓成交值前段班的個股） ──
+  const nw = x.nw ? (Array.isArray(x.nw) ? { n: x.nw[0], p: x.nw[1], q: x.nw[2] } : x.nw) : null;
+  if (nw && nw.n) {
+    r.news = nw;
+    const t = '近 7 天新聞 ' + nw.n + ' 則，利多 ' + nw.p + '、利空 ' + nw.q;
+    if (nw.p - nw.q >= 2) add(1, t + '，消息面偏多', '消息面');
+    else if (nw.q - nw.p >= 2) add(-1, t + '，消息面偏空', '消息面');
+    else add(0, t, '消息面');
   }
   // ── 基本面（只用最新一個月營收的年增率計分，其他列在數字上） ──
   const fd = x.f || {};
@@ -1015,6 +1026,7 @@ function renderNews() {
 }
 
 /* ── 排行：一套名單邏輯，總覽、排行榜、法人動向都用 ── */
+const accCell = c => { const ac = H.q[c] && H.q[c].ac; return ac ? '<span class="' + (ac[1] >= 60 ? 'up' : ac[1] < 50 ? 'down' : '') + '">' + ac[1].toFixed(0) + '%</span>' : '—'; };
 const RANK = {
   strong: { col: '20 日', val: a => a.ret20, key: a => a.score * 100 + a.ret20 },
   weak:   { col: '20 日', val: a => a.ret20, key: a => -(a.score * 100 + a.ret20) },
@@ -1033,8 +1045,8 @@ const RANK = {
   mgDown: { col: '融資 5 日', val: a => a.mg5, key: a => -a.mg5, only: a => a.mg5 != null && a.mg5 < 0 && a.mg >= 500 },
   msUp:   { col: '融券 5 日增減(張)', val: a => a.msChg, key: a => a.msChg, only: a => a.msChg > 0, raw: true },
   msDown: { col: '融券 5 日增減(張)', val: a => a.msChg, key: a => -a.msChg, only: a => a.msChg < 0, raw: true },
-  aiLong:  { col: 'AI 10 日平均／勝率', only: (a, c) => { const r = aiFor(c); return r && r.ad.act === 'long'; }, key: (a, c) => { const r = aiFor(c); return a.score * 100 + r.s10.win; }, fmtv: (a, c) => { const r = aiFor(c); return '<span class="' + cls(r.s10.mean) + '">' + pct(r.s10.mean) + '</span> ／ ' + r.s10.win.toFixed(0) + '%'; } },
-  aiShort: { col: 'AI 10 日平均／勝率', only: (a, c) => { const r = aiFor(c); return r && r.ad.act === 'short'; }, key: (a, c) => { const r = aiFor(c); return -(a.score * 100 + r.s10.win); }, fmtv: (a, c) => { const r = aiFor(c); return '<span class="' + cls(r.s10.mean) + '">' + pct(r.s10.mean) + '</span> ／ ' + r.s10.win.toFixed(0) + '%'; } },
+  aiLong:  { col: 'AI 10 日平均／勝率／回測命中', only: (a, c) => { const r = aiFor(c); return r && r.ad.act === 'long'; }, key: (a, c) => { const r = aiFor(c); return a.score * 100 + r.s10.win; }, fmtv: (a, c) => { const r = aiFor(c); return '<span class="' + cls(r.s10.mean) + '">' + pct(r.s10.mean) + '</span> ／ ' + r.s10.win.toFixed(0) + '% ／ ' + accCell(c); } },
+  aiShort: { col: 'AI 10 日平均／勝率／回測命中', only: (a, c) => { const r = aiFor(c); return r && r.ad.act === 'short'; }, key: (a, c) => { const r = aiFor(c); return -(a.score * 100 + r.s10.win); }, fmtv: (a, c) => { const r = aiFor(c); return '<span class="' + cls(r.s10.mean) + '">' + pct(r.s10.mean) + '</span> ／ ' + r.s10.win.toFixed(0) + '% ／ ' + accCell(c); } },
 };
 function rankList(tab, o) {
   const R = RANK[tab]; o = o || {};
@@ -1067,6 +1079,7 @@ function bindTable(t) {
 }
 function renderRank() {
   $('#aiHint').classList.toggle('hide', !/^ai/.test(TAB));
+  if (H.acc && H.acc['10'] && $('#accAll')) $('#accAll').innerHTML = '<br><b>整體回測</b>（全市場、近 ' + (H.btDays || 120) + ' 個交易日、' + fmt(H.acc['10'][0], 0) + ' 次預測）：10 日方向命中率 <b>' + H.acc['10'][1].toFixed(1) + '%</b>、目標價碰到率 ' + H.acc['10'][2].toFixed(0) + '%、平均誤差 ±' + H.acc['10'][3].toFixed(1) + '%' + (H.acc['20'] ? '；20 日方向命中率 ' + H.acc['20'][1].toFixed(1) + '%' : '') + '。';
   const list = rankList(TAB, { mk: $('#fMarket').value, minV: +$('#fVol').value, etf: $('#fEtf').checked, limit: 30 });
   const t = $('#rankTable'); t.innerHTML = tableHtml(list, RANK[TAB]); bindTable(t);
 }
@@ -1262,6 +1275,32 @@ function advise(a, an) {
   if (a.mg5 != null && a.mg5 > 5) why.push('融資 5 日增加 ' + a.mg5.toFixed(1) + '%，籌碼變浮');
   return { act, label, tone, conf, why };
 }
+/* 回測結果：同一套方法放回過去 120 天，每天只用當天以前的資料預測，再對答案 */
+function accuracyHtml(bt) {
+  if (!bt || !bt['10']) return '<p class="hint" style="margin-top:6px">準確度：排程下次跑完才會有這檔的回測結果。</p>';
+  const cell = (k, f) => HORIZ.map(x => { const v = bt[String(x)]; return '<td>' + (v ? f(v) : '—') + '</td>'; }).join('');
+  const tone = v => v >= 60 ? 'up' : v < 50 ? 'down' : '';
+  let h = '<h3>這套方法在這檔準不準 <small>回測近 ' + (H.btDays || 120) + ' 個交易日，每天只用當天以前的資料預測</small></h3>' +
+    '<table class="fan"><tr><th></th>' + HORIZ.map(x => '<th>' + x + ' 日</th>').join('') + '</tr>' +
+    '<tr><td>預測次數</td>' + cell('n', v => v[0]) + '</tr>' +
+    '<tr><td>漲跌方向猜對</td>' + cell('d', v => '<span class="' + tone(v[1]) + '">' + v[1].toFixed(0) + '%</span>') + '</tr>' +
+    '<tr><td>目標價有碰到</td>' + cell('h', v => v[2].toFixed(0) + '%') + '</tr>' +
+    '<tr><td>平均誤差</td>' + cell('e', v => '±' + v[3].toFixed(1) + '%') + '</tr></table>';
+  if (bt.last && bt.last.length) {
+    h += '<details class="bt"><summary>最近 ' + bt.last.length + ' 次 10 日預測 vs 實際</summary><table class="fan"><tr><th>預測日</th><th>預估 10 日</th><th>實際</th><th>方向</th><th>目標價</th></tr>' +
+      bt.last.slice().reverse().map(r => '<tr><td>' + esc(r[0]) + '</td><td class="' + cls(r[1]) + '">' + pct(r[1]) + '</td><td class="' + cls(r[2]) + '">' + pct(r[2]) + '</td><td>' + ((r[1] >= 0) === (r[2] >= 0) ? '<span class="up">✓</span>' : '<span class="down">✗</span>') + '</td><td>' + (r[3] ? '<span class="up">到了</span>' : '<span class="down">沒到</span>') + '</td></tr>').join('') + '</table></details>';
+  }
+  h += '<p class="hint">「方向猜對」是預估中位數跟實際漲跌同號的比例；「目標價有碰到」是那幾天內最高／最低價有沒有摸到預估價位（預估幅度小的時候很容易到，看方向比較實在）。</p>';
+  return h;
+}
+function stockNewsHtml(nw) {
+  if (!nw || !nw.i || !nw.i.length) return '';
+  const tag = v => v > 0 ? '<span class="ntag up">利多</span>' : v < 0 ? '<span class="ntag down">利空</span>' : '<span class="ntag">中性</span>';
+  return '<div class="hint" style="margin-bottom:6px">近 7 天 ' + nw.n + ' 則，利多 <span class="up">' + nw.p + '</span>、利空 <span class="down">' + nw.q + '</span>（關鍵字粗分）</div><ul class="snews">' +
+    nw.i.map(it => '<li>' + tag(it[4]) + '<a href="' + esc(it[1]) + '" target="_blank" rel="noopener">' + esc(it[0]) + '</a><small>' + esc(it[3]) + '・' + esc(fmtDate(it[2])) + '</small></li>').join('') + '</ul>';
+}
+const pct1 = v => v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
+function fmtDate(d) { const t = Date.parse(d); if (isNaN(t)) return ''; const x = new Date(t); return (x.getMonth() + 1) + '/' + x.getDate(); }
 function drawFan(cv, price, an) {
   const { ctx, W, Hh } = setup(cv);
   const padL = 8, padR = 60, padT = 10, padB = 20; const x0 = padL, x1 = W - padR, y0 = padT, y1 = Hh - padB;
@@ -1287,7 +1326,7 @@ function drawFan(cv, price, an) {
   ctx.textAlign = 'left'; ctx.fillText('今天', xs(0), Hh - padB + 5); ctx.textAlign = 'center';
   pts.forEach(p => { if (!p[0]) return; ctx.fillStyle = p[2] >= 0 ? '#ff5a68' : '#34d399'; ctx.textBaseline = 'bottom'; ctx.fillText(pct(p[2]), xs(p[0]), ys(p[3]) - 4); });
 }
-function aiHtml(a, an, price) {
+function aiHtml(a, an, price, bt) {
   const ad = advise(a, an);
   let h = '<div class="card ai"><h2><i>✦</i>AI 建議 <small>依這檔自己的歷史統計，不是保證</small></h2>' +
     '<div class="verdict"><span class="badge ' + ad.tone + '">' + esc(ad.label) + '<small>信心 ' + ad.conf + '</small></span></div>' +
@@ -1301,12 +1340,13 @@ function aiHtml(a, an, price) {
       '<table class="fan"><tr><th></th>' + HORIZ.map(x => '<th>' + x + ' 日後</th>').join('') + '</tr>' +
       row('樣本數', hh => hh ? fmt(hh.n, 0) : '—') + row('平均漲跌', hh => hh ? '<span class="' + cls(hh.mean) + '">' + pct(hh.mean) + '</span>' : '—') +
       row('中位數', hh => hh ? '<span class="' + cls(hh.med) + '">' + pct(hh.med) + '</span>' : '—') + row('上漲機率', hh => hh ? hh.win.toFixed(0) + '%' : '—') +
-      row('常見區間', hh => hh ? pct(hh.p25) + ' ～ ' + pct(hh.p75) : '—') + row('粗估價位', hh => hh ? fmt(price * (1 + hh.p25 / 100)) + ' ～ ' + fmt(price * (1 + hh.p75 / 100)) : '—') + '</table>';
+      row('常見區間', hh => hh ? pct1(hh.p25) + '～' + pct1(hh.p75) : '—') + row('<b>預估目標價</b>', hh => hh ? '<b>' + fmt(price * (1 + hh.med / 100)) + '</b>' : '—') + row('價位區間', hh => hh ? fmt(price * (1 + hh.p25 / 100)) + '～' + fmt(price * (1 + hh.p75 / 100)) : '—') + '</table>';
     if (an.useOwn && an.mkt && an.mkt.h[10]) {
       const sg = an.mkt.sig, m10 = an.mkt.h[10], m20 = an.mkt.h[20];
       h += '<p class="hint" style="margin-top:6px">參考：全市場過去' + (an.mkt.mode === 'exact' ? '六個條件相同' : '均線、RSI、MACD 相同') + '（' + [SIG_TEXT.trend[sg.trend], SIG_TEXT.rb[sg.rb], SIG_TEXT.mb[sg.mb]].join('、') + '）的情況 ' + m10.n + ' 次，10 日後平均 <span class="' + cls(m10.mean) + '">' + pct(m10.mean) + '</span>、上漲機率 ' + m10.win.toFixed(0) + '%' + (m20 ? '；20 日後平均 <span class="' + cls(m20.mean) + '">' + pct(m20.mean) + '</span>' : '') + '。</p>';
     }
   } else h += '<p class="hint">資料不足 60 天，還算不出相似情境。</p>';
+  h += accuracyHtml(bt);
   h += '<p class="hint" style="margin-top:6px">怎麼算：只看這一檔，把過去每一天的技術面狀態量化，挑出跟今天最像的日子，看它們之後怎麼走。是機率，不是預測；碰到財報、消息面會完全不一樣。</p></div>';
   return h;
 }
@@ -1368,7 +1408,7 @@ async function openStock(code, go_) {
   const dates = det ? det.dates : H.dates;
   const padTail = arr => arr && arr.length < dates.length ? new Array(dates.length - arr.length).fill(null).concat(arr) : arr;
   const s = det ? det.s : Object.assign({}, s0, { fi: padTail(s0.fi), it: padTail(s0.it), dl: padTail(s0.dl), mg: padTail(s0.mg), ms: padTail(s0.ms) });
-  const a = analyze(s.c, s.v, { fi: s.fi, it: s.it, dl: s.dl, mg: s.mg, ms: s.ms, o: s.o, h: s.h, l: s.l, f: s.f, pe: s0.pe, yld: s0.yld });
+  const a = analyze(s.c, s.v, { fi: s.fi, it: s.it, dl: s.dl, mg: s.mg, ms: s.ms, o: s.o, h: s.h, l: s.l, f: s.f, pe: s0.pe, yld: s0.yld, nw: s.nw || s0.nw });
   if (!a) { el.innerHTML = '<div class="card"><div class="empty">' + esc(s.n) + ' 的資料太少，還判斷不了</div></div>'; return; }
   const on = WATCH.includes(code);
   let an = null; try { an = analogsFor(s.c, s.v, code); } catch (e) { console.error(e); }
@@ -1409,9 +1449,9 @@ async function openStock(code, go_) {
           '<div class="tiles">' + chipTiles.map(tile).join('') + '</div>' + costHtml(s, a.c) + '</div>'
           : '<div class="card" style="margin-top:10px"><p class="hint">這檔還沒有法人與融資資料（排程要再跑一次才會補齊）</p></div>') +
       '</div>' +
-      '<div>' + aiHtml(a, an, a.c) + '<div class="card" style="margin-top:10px"><h2><i>✓</i>判斷依據</h2><ul class="reasons">' + reasonsHtml(a.reasons) + '</ul></div>' +
+      '<div>' + aiHtml(a, an, a.c, s.bt) + '<div class="card" style="margin-top:10px"><h2><i>✓</i>判斷依據</h2><ul class="reasons">' + reasonsHtml(a.reasons) + '</ul></div>' +
         (fundTiles.length ? '<div class="card" style="margin-top:10px"><h2><i>▤</i>基本面</h2><div class="tiles" style="grid-template-columns:1fr 1fr">' + fundTiles.map(tile).join('') + '</div></div>' : '') +
-        '<div class="card" style="margin-top:10px"><h2><i>≡</i>新聞與資料</h2><div class="links"><a href="https://news.google.com/search?q=' + gq + '&hl=zh-TW&gl=TW&ceid=TW:zh-Hant" target="_blank" rel="noopener">Google 新聞</a>' +
+        '<div class="card" style="margin-top:10px"><h2><i>≡</i>新聞與資料</h2>' + stockNewsHtml(s.nw) + '<div class="links"><a href="https://news.google.com/search?q=' + gq + '&hl=zh-TW&gl=TW&ceid=TW:zh-Hant" target="_blank" rel="noopener">Google 新聞</a>' +
         '<a href="https://tw.stock.yahoo.com/quote/' + esc(code) + (s.m === 'tpex' ? '.TWO' : '.TW') + '/news" target="_blank" rel="noopener">Yahoo 股市</a>' +
         '<a href="https://mops.twse.com.tw/mops/web/t146sb05?co_id=' + esc(code) + '" target="_blank" rel="noopener">公開資訊觀測站</a></div></div>' +
       '</div>' +
@@ -1499,7 +1539,7 @@ async function load() {
   }
   H = await res.json();
   if (!H.dates || !H.dates.length || !H.q) { $('#loading').innerHTML = '<div class="empty">history.json 是空的，等排程跑過一次再來</div>'; return; }
-  for (const c in H.q) { const s = H.q[c]; const a = analyze(s.c, s.v, { fi: s.fi, it: s.it, dl: s.dl, mg: s.mg, ms: s.ms, pe: s.pe, yld: s.yld }); if (a) A[c] = a; }
+  for (const c in H.q) { const s = H.q[c]; const a = analyze(s.c, s.v, { fi: s.fi, it: s.it, dl: s.dl, mg: s.mg, ms: s.ms, pe: s.pe, yld: s.yld, nw: s.nw }); if (a) A[c] = a; }
   $('#meta').textContent = H.dates[H.dates.length - 1] + '・' + Object.keys(H.q).length + ' 檔';
   try { const r = await fetch('news.json?_=' + BUST(), { cache: 'no-cache' }); NEWS = r.ok ? await r.json() : null; } catch (_) { NEWS = null; }
   try { const r = await fetch('idx.json?_=' + BUST(), { cache: 'no-cache' }); IDX = r.ok ? await r.json() : null; } catch (_) { IDX = null; }
