@@ -1418,7 +1418,7 @@ def main():
                 BT_ERR[0] += 1
                 import traceback
                 print('  模型 %s 失敗：%s' % (code, traceback.format_exc()[-400:]), flush=True)
-        if ai and ai.get('10'):
+        if ai and ai.get('rec'):
             s['ai'] = ai                                # 完整版（各尺度統計、目標停損）放分片，個股頁用
             h['ai'] = {k: ai[k] for k in ('n', 'k', 'x', 'mdl', 'rec') if k in ai}   # 首頁排行只要建議本身
         if bt:
