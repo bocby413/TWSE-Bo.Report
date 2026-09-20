@@ -1197,10 +1197,29 @@ function featAt(S, vr, i) {
   const f = [(p - S.ma20[i]) / S.ma20[i], (S.ma5[i] - S.ma20[i]) / S.ma20[i], (S.ma20[i] - S.ma60[i]) / S.ma60[i],
     S.ma20[i] / S.ma20[i - 5] - 1, S.rs[i] / 100, S.mh[i] / p, hi > lo ? (p - lo) / (hi - lo) : .5, p / c[i - 20] - 1, p / c[i - 5] - 1];
   if (vr) f.push(vr[i] == null ? 0 : vr[i]);
+  if (S.cf) f.push(...S.cf[i]);
   return f;
 }
-function ownAnalogs(S, vols) {
+/* 籌碼特徵（跟 fetch_history.py 的 _chip_feats 同一套）：外資／投信 5 日淨買佔 5 日量、融資 5 日增減；資料不到九成就不放 */
+function chipFeats(c, vols, x) {
+  if (!x || !vols) return null;
+  const n = c.length, off = vols.length - n;
+  const al = a => c.map((_, i) => (a && a[i + off] != null) ? a[i + off] : null);
+  const fi = al(x.fi), it = al(x.it), mg = al(x.mg), v = al(vols);
+  let have = 0; for (let i = 60; i < n; i++) if (fi[i] != null || mg[i] != null) have++;
+  if (n <= 60 || have < (n - 60) * .9) return null;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    if (i < 5) { out.push([0, 0, 0]); continue; }
+    let vv = 0, f5 = 0, i5 = 0; for (let k = i - 4; k <= i; k++) { vv += v[k] || 0; f5 += fi[k] || 0; i5 += it[k] || 0; }
+    vv = vv || 1;
+    out.push([f5 / vv, i5 / vv, (mg[i] && mg[i - 5]) ? mg[i] / mg[i - 5] - 1 : 0]);
+  }
+  return out;
+}
+function ownAnalogs(S, vols, x) {
   const c = S.c, L = c.length - 1;
+  S.cf = chipFeats(c, vols, x);
   let vr = null;
   if (vols && vols.some(v => v)) {                           // 量比：5 日均量 / 20 日均量 - 1
     const off = vols.length - c.length; const v = c.map((_, i) => vols[i + off] || 0);
@@ -1225,15 +1244,15 @@ function ownAnalogs(S, vols) {
    排行要對兩千多檔查，只能用這份；個股頁也優先用它，兩邊結論才一致 */
 function ownFromHist(code) {
   const ai = H.q[code] && H.q[code].ai; if (!ai) return null;
-  const out = { n: ai.n, k: ai.k, h: {}, pre: true };
+  const out = { n: ai.n, k: ai.k, x: ai.x, h: {}, pre: true };
   HORIZ.forEach(h => { const v = ai[String(h)]; out.h[h] = v ? { n: v[0], mean: v[1], med: v[2], p25: v[3], p75: v[4], win: v[5] } : null; });
   return out;
 }
-function analogsFor(closes, vols, code) {
+function analogsFor(closes, vols, code, x) {
   const S = seriesOf(closes); const L = S.c.length - 1;
   if (L < 60) return null;
   let own = code ? ownFromHist(code) : null, mkt = null;
-  if (!own) try { own = ownAnalogs(S, vols); } catch (e) { console.error(e); }
+  if (!own) try { own = ownAnalogs(S, vols, x); } catch (e) { console.error(e); }
   try { mkt = marketAnalogs(S, L); } catch (e) { console.error(e); }
   if (!own && !mkt) return null;
   const useOwn = !!(own && own.h[10] && own.h[10].n >= 8);
@@ -1324,7 +1343,7 @@ function aiHtml(a, an, price, bt) {
   if (an && an.h) {
     const row = (name, f) => '<tr><td>' + name + '</td>' + HORIZ.map(x => '<td>' + f(an.h[x]) + '</td>').join('') + '</tr>';
     h += '<h3>後 5／10／20 天粗估走勢</h3>';
-    if (an.useOwn) h += '<p class="hint">從這檔近 ' + (an.own.pre ? an.own.n + 60 : an.span) + ' 個交易日裡，找出技術面狀態跟今天最像的 ' + an.own.k + ' 天（看乖離、均線間距、月線斜率、RSI、MACD、區間位置、5 與 20 日動能、量能），統計它們之後的走勢：</p>';
+    if (an.useOwn) h += '<p class="hint">從這檔近 ' + (an.own.pre ? an.own.n + 60 : an.span) + ' 個交易日裡，找出' + (an.own.x ? '技術面加籌碼' : '技術面') + '狀態跟今天最像的 ' + an.own.k + ' 天（看乖離、均線間距、月線斜率、RSI、MACD、區間位置、5 與 20 日動能、量能' + (an.own.x ? '、外資與投信 5 日淨買、融資增減' : '') + '），統計它們之後的走勢：</p>';
     else h += '<p class="hint">這檔的歷史還不夠長，先用全市場過去' + (an.mkt.mode === 'exact' ? '六個條件完全相同' : '均線排列、RSI、MACD 相同') + '的情況統計：</p>';
     h += '<div class="chart"><canvas id="fan" height="170"></canvas></div>' +
       '<table class="fan"><tr><th></th>' + HORIZ.map(x => '<th>' + x + ' 日後</th>').join('') + '</tr>' +
@@ -1401,7 +1420,7 @@ async function openStock(code, go_) {
   const a = analyze(s.c, s.v, { fi: s.fi, it: s.it, dl: s.dl, mg: s.mg, ms: s.ms, o: s.o, h: s.h, l: s.l, f: s.f, pe: s0.pe, yld: s0.yld });
   if (!a) { el.innerHTML = '<div class="card"><div class="empty">' + esc(s.n) + ' 的資料太少，還判斷不了</div></div>'; return; }
   const on = WATCH.includes(code);
-  let an = null; try { an = analogsFor(s.c, s.v, code); } catch (e) { console.error(e); }
+  let an = null; try { an = analogsFor(s.c, s.v, code, { fi: s.fi, it: s.it, mg: s.mg }); } catch (e) { console.error(e); }
   const tiles = [
     ['5 日均線', fmt(a.ma5)], ['20 日均線', fmt(a.ma20)], ['60 日均線', fmt(a.ma60)], ['RSI（14）', a.rsi == null ? '—' : a.rsi.toFixed(0)],
     ['近 20 日', '<span class="' + cls(a.ret20) + '">' + pct(a.ret20) + '</span>'], ['月線乖離', '<span class="' + cls(a.bias20) + '">' + pct(a.bias20) + '</span>'],

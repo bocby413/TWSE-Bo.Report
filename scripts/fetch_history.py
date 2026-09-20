@@ -701,12 +701,43 @@ def _stats(arr):
             round(sum(1 for v in s if v > 0) / n * 100, 1)]
 
 
-def _feature_rows(closes, vols):
-    """回 (補值後的收盤 c, [(i, 特徵向量)…])。特徵：乖離、均線間距、月線斜率、RSI、MACD、區間位置、5／20 日動能、量能"""
+CHIP_COVER = .9          # 法人融資資料要蓋到九成以上的日子，才把籌碼放進相似情境的特徵（不然缺的日子補 0 會亂比）
+
+
+def _chip_feats(c, vols, chips):
+    """籌碼特徵：外資 5 日淨買佔 5 日成交量、投信 5 日淨買佔成交量、融資 5 日增減。回 None 表示資料不夠不放"""
+    if not chips or not vols:
+        return None
+    n = len(c)
+    off = len(vols) - n
+
+    def al(a):
+        return [(a[i + off] if a and 0 <= i + off < len(a) else None) for i in range(n)]
+    fi, it, mg, v = al(chips.get('fi')), al(chips.get('it')), al(chips.get('mg')), al(vols)
+    have = sum(1 for i in range(60, n) if fi[i] is not None or mg[i] is not None)
+    if n <= 60 or have < (n - 60) * CHIP_COVER:
+        return None
+    out = []
+    for i in range(n):
+        if i < 5:
+            out.append((0., 0., 0.))
+            continue
+        vv = sum((v[k] or 0) for k in range(i - 4, i + 1)) or 1
+        f5 = sum((fi[k] or 0) for k in range(i - 4, i + 1)) / vv
+        i5 = sum((it[k] or 0) for k in range(i - 4, i + 1)) / vv
+        m5 = (mg[i] / mg[i - 5] - 1) if mg[i] and mg[i - 5] else 0.
+        out.append((f5, i5, m5))
+    return out
+
+
+def _feature_rows(closes, vols, chips=None):
+    """回 (補值後的收盤 c, [(i, 特徵向量)…])。特徵：乖離、均線間距、月線斜率、RSI、MACD、區間位置、5／20 日動能、量能，
+    籌碼資料夠齊的話再加外資／投信 5 日淨買比、融資 5 日增減（跟 index.html 的 featAt 同一套）"""
     c = _ffill(closes)
     L = len(c) - 1
     if L < 60:
         return c, []
+    cf = _chip_feats(c, vols, chips)
     ma5, ma20, ma60 = _sma(c, 5), _sma(c, 20), _sma(c, 60)
     rs, mh = _rsi_series(c, 14), _macd_hist(c)
     vr = None
@@ -727,6 +758,8 @@ def _feature_rows(closes, vols):
              p / c[i - 20] - 1, p / c[i - 5] - 1]
         if vr is not None:
             f.append(0 if vr[i] is None else vr[i])
+        if cf is not None:
+            f.extend(cf[i])
         return f
 
     rows = [(i, feat(i)) for i in range(60, L + 1)]
@@ -744,9 +777,9 @@ def _pick(cand, K):
     return picked
 
 
-def own_analogs(closes, vols):
-    """回 {'n': 候選天數, 'k': 取幾天, '5': [n, 平均%, 中位%, p25%, p75%, 勝率%], '10': …, '20': …}，資料不夠回 None"""
-    c, rows = _feature_rows(closes, vols)
+def own_analogs(closes, vols, chips=None):
+    """回 {'n': 候選天數, 'k': 取幾天, 'x': 有沒有用籌碼, '5': [n, 平均%, 中位%, p25%, p75%, 勝率%], '10': …, '20': …}，資料不夠回 None"""
+    c, rows = _feature_rows(closes, vols, chips)
     L = len(c) - 1
     cur = next((f for i, f in rows if i == L), None)
     if cur is None or len(rows) < 25:
@@ -757,7 +790,7 @@ def own_analogs(closes, vols):
     dist = lambda f: sum(((f[k] - cur[k]) / sd[k]) ** 2 for k in range(dim)) ** .5
     cand = sorted(((i, dist(f)) for i, f in rows if i <= L - 5), key=lambda x: x[1])
     picked = _pick(cand, min(40, max(10, len(cand) // 4)))
-    out = {'n': len(cand), 'k': len(picked)}
+    out = {'n': len(cand), 'k': len(picked), 'x': 1 if len(cur) > 10 else 0}
     for h in HORIZ:
         st = _stats([c[i + h] / c[i] - 1 for i in picked if i + h <= L])
         if st:
@@ -768,14 +801,14 @@ def own_analogs(closes, vols):
 BT_DAYS = 120            # 回測最近幾個交易日的預測
 
 
-def backtest(closes, vols, highs, lows, dates):
+def backtest(closes, vols, highs, lows, dates, chips=None):
     """把同一套「找相似日子」的方法放回過去每一天，只用那天以前的資料做預測，再跟實際走勢對。
     回 {'5': [次數, 方向命中%, 目標價達成%, 平均誤差%], '10': …, '20': …, 'last': [[日期, 預估10日%, 實際%, 有沒有到], …]}"""
     try:
         import numpy as np
     except ImportError:
         return None
-    c, rows = _feature_rows(closes, vols)
+    c, rows = _feature_rows(closes, vols, chips)
     if len(rows) < 60:
         return None
     off = len(closes) - len(c)                         # c 的第 i 天是 dates 的第 i+off 天
@@ -1131,13 +1164,13 @@ def main():
         shards.setdefault(shard_of(code), {})[code] = s
         h = {'n': s['n'], 'm': s['m'], 'c': series['c'][hoff:], 'v': series['v'][hoff:]}
         try:
-            ai = own_analogs(series['c'], series['v'])
+            ai = own_analogs(series['c'], series['v'], {'fi': series['fi'], 'it': series['it'], 'mg': series['mg']})
         except Exception:
             ai = None
         if ai and ai.get('10'):
             h['ai'] = ai
         try:
-            bt = backtest(series['c'], series['v'], series['h'], series['l'], dates)
+            bt = backtest(series['c'], series['v'], series['h'], series['l'], dates, {'fi': series['fi'], 'it': series['it'], 'mg': series['mg']})
         except Exception as e:
             bt = None
             if BT_ERR[0] < 3:
