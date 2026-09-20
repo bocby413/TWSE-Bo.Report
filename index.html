@@ -1069,7 +1069,7 @@ function bindTable(t) {
 }
 function renderRank() {
   $('#aiHint').classList.toggle('hide', !/^ai/.test(TAB));
-  if (H.acc && H.acc['10'] && $('#accAll')) $('#accAll').innerHTML = '<br><b>整體回測</b>（全市場、近 ' + (H.btDays || 120) + ' 個交易日、' + fmt(H.acc['10'][0], 0) + ' 次預測）：10 日方向命中率 <b>' + H.acc['10'][1].toFixed(1) + '%</b>、目標價碰到率 ' + H.acc['10'][2].toFixed(0) + '%、平均誤差 ±' + H.acc['10'][3].toFixed(1) + '%' + (H.acc['20'] ? '；20 日方向命中率 ' + H.acc['20'][1].toFixed(1) + '%' : '') + '。';
+  if (H.acc && H.acc['10'] && $('#accAll')) $('#accAll').innerHTML = '<br><b>整體回測</b>（全市場、近 ' + (H.btDays || 120) + ' 個交易日、每 ' + (H.btStep || 1) + ' 天預測一次、共 ' + fmt(H.acc['10'][0], 0) + ' 次）：10 日方向命中率 <b>' + H.acc['10'][1].toFixed(1) + '%</b>、目標價碰到率 ' + H.acc['10'][2].toFixed(0) + '%、平均誤差 ±' + H.acc['10'][3].toFixed(1) + '%' + (H.acc['20'] ? '；20 日方向命中率 ' + H.acc['20'][1].toFixed(1) + '%' : '') + '。';
   const list = rankList(TAB, { mk: $('#fMarket').value, minV: +$('#fVol').value, etf: $('#fEtf').checked, limit: 30 });
   const t = $('#rankTable'); t.innerHTML = tableHtml(list, RANK[TAB]); bindTable(t);
 }
@@ -1281,7 +1281,7 @@ function advise(a, an, ac) {
   const agree = act === 'hold' || (act === 'long' && win >= 58) || (act === 'short' && win <= 42);
   const conf = !s10 ? '低' : (n >= 15 && agree) ? '高' : n >= 8 ? '中' : '低';
   why.push('技術、籌碼、基本面合計 ' + (score > 0 ? '+' : '') + score + ' 分（' + a.label + '）');
-  if (ac) why.push('這檔回測 ' + ac[0] + ' 次，10 日方向命中 ' + ac[1].toFixed(0) + '%、目標價碰到 ' + ac[2].toFixed(0) + '%' + (acOk ? '，達到門檻（≥ ' + AC_MIN_HIT + '%）' : '，未達門檻（≥ ' + AC_MIN_HIT + '%、≥ ' + AC_MIN_N + ' 次）'));
+  if (ac) why.push('這檔近兩年回測 ' + ac[0] + ' 次，10 日方向命中 ' + ac[1].toFixed(0) + '%、目標價碰到 ' + ac[2].toFixed(0) + '%' + (acOk ? '，達到門檻（≥ ' + AC_MIN_HIT + '%）' : '，未達門檻（≥ ' + AC_MIN_HIT + '%、≥ ' + AC_MIN_N + ' 次）'));
   if (s10) why.push((an.useOwn ? '這檔過去最像今天的 ' + n + ' 天' : '全市場過去相同條件 ' + n + ' 次') + '，10 日後平均 ' + pct(mean) + '、上漲機率 ' + win.toFixed(0) + '%' + (s20 ? '，20 日後平均 ' + pct(s20.mean) : ''));
   if (an && an.useOwn && an.mkt && an.mkt.h[10]) { const m = an.mkt.h[10]; if ((m.mean > 0) !== (mean > 0)) why.push('但全市場同條件的統計方向相反（10 日後平均 ' + pct(m.mean) + '），要保守看'); }
   if (a.fi5 != null) why.push('外資 5 日 ' + sgn(a.fi5, 0) + ' 張' + (a.it5 != null ? '、投信 ' + sgn(a.it5, 0) + ' 張' : ''));
@@ -1295,14 +1295,14 @@ function accuracyHtml(bt) {
   if (!bt || !bt['10']) return '<p class="hint" style="margin-top:6px">準確度：排程下次跑完才會有這檔的回測結果。</p>';
   const cell = (k, f) => HORIZ.map(x => { const v = bt[String(x)]; return '<td>' + (v ? f(v) : '—') + '</td>'; }).join('');
   const tone = v => v >= AC_MIN_HIT ? 'up' : v < 50 ? 'down' : '';
-  let h = '<h3>這套方法在這檔準不準 <small>回測近 ' + (H.btDays || 120) + ' 個交易日，每天只用當天以前的資料預測</small></h3>' +
+  let h = '<h3>這套方法在這檔準不準 <small>回測近 ' + (H.btDays || 120) + ' 個交易日（約兩年），每 ' + (H.btStep || 1) + ' 個交易日預測一次，只用當天以前的資料</small></h3>' +
     '<table class="fan"><tr><th></th>' + HORIZ.map(x => '<th>' + x + ' 日</th>').join('') + '</tr>' +
     '<tr><td>預測次數</td>' + cell('n', v => v[0]) + '</tr>' +
     '<tr><td>漲跌方向猜對</td>' + cell('d', v => '<span class="' + tone(v[1]) + '">' + v[1].toFixed(0) + '%</span>') + '</tr>' +
     '<tr><td>目標價有碰到</td>' + cell('h', v => v[2].toFixed(0) + '%') + '</tr>' +
     '<tr><td>平均誤差</td>' + cell('e', v => '±' + v[3].toFixed(1) + '%') + '</tr></table>';
   if (bt.last && bt.last.length) {
-    h += '<details class="bt"><summary>最近 ' + bt.last.length + ' 次 10 日預測 vs 實際</summary><table class="fan"><tr><th>預測日</th><th>預估 10 日</th><th>實際</th><th>方向</th><th>目標價</th></tr>' +
+    h += '<details class="bt"><summary>最近 ' + bt.last.length + ' 次 10 日預測 vs 實際（每 10 個交易日一筆，窗口不重疊）</summary><table class="fan"><tr><th>預測日</th><th>預估 10 日</th><th>實際</th><th>方向</th><th>目標價</th></tr>' +
       bt.last.slice().reverse().map(r => '<tr><td>' + esc(r[0]) + '</td><td class="' + cls(r[1]) + '">' + pct(r[1]) + '</td><td class="' + cls(r[2]) + '">' + pct(r[2]) + '</td><td>' + ((r[1] >= 0) === (r[2] >= 0) ? '<span class="up">✓</span>' : '<span class="down">✗</span>') + '</td><td>' + (r[3] ? '<span class="up">到了</span>' : '<span class="down">沒到</span>') + '</td></tr>').join('') + '</table></details>';
   }
   h += '<p class="hint">「方向猜對」是預估中位數跟實際漲跌同號的比例；「目標價有碰到」是那幾天內最高／最低價有沒有摸到預估價位（預估幅度小的時候很容易到，看方向比較實在）。</p>';

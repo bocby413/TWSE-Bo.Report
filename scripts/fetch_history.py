@@ -798,7 +798,9 @@ def own_analogs(closes, vols, chips=None):
     return out
 
 
-BT_DAYS = 120            # 回測最近幾個交易日的預測
+BT_DAYS = 500            # 回測最近幾個交易日（約兩年）
+BT_STEP = 5              # 每隔幾個交易日預測一次：連續每天預測會互相重疊，看起來準不代表真的準
+BT_LAST = 20             # 「預測 vs 實際」列最近幾筆（每兩個取樣一筆，等於每 10 個交易日一筆、10 日窗口不重疊）
 
 
 def backtest(closes, vols, highs, lows, dates, chips=None):
@@ -823,7 +825,8 @@ def backtest(closes, vols, highs, lows, dates, chips=None):
     lo = [(lows[i + off] if lows[i + off] is not None else c[i]) for i in range(len(c))]
     res = {h: [] for h in HORIZ}
     last = []
-    for t in range(max(60, L - BT_DAYS - 4), L - 4):    # t+5 ≤ L 才有答案可對
+    t0 = L - 5                                          # 最後一個 t+5 ≤ L 的日子，往回每 BT_STEP 天取一次
+    for t in range(t0 - ((t0 - max(60, L - BT_DAYS - 4)) // BT_STEP) * BT_STEP, t0 + 1, BT_STEP):
         k = pos.get(t)
         if k is None:
             continue
@@ -857,7 +860,7 @@ def backtest(closes, vols, highs, lows, dates, chips=None):
                        round(sum(abs(a - m_) for m_, a, _ in r) / n * 100, 2)]
     if '10' not in out:
         return None
-    out['last'] = last[-10:]
+    out['last'] = last[-2 * BT_LAST::2] if len(last) >= 2 else last   # 每 10 個交易日一筆
     return out
 
 
@@ -1215,7 +1218,7 @@ def main():
                   fp, ensure_ascii=False, separators=(',', ':'))
     acc_out = {hz: [v[0], round(v[1] / v[0], 1), round(v[2] / v[0], 1), round(v[3] / v[0], 2)] for hz, v in acc.items() if v[0]}
     out = {'dates': dates[hoff:], 'updated': now.strftime('%Y-%m-%d %H:%M'), 'keep': HIST_KEEP, 'count': len(hist_q),
-           'idx': {k: v[hoff:] for k, v in idx.items()}, 'chipDays': n20, 'q': hist_q, 'acc': acc_out, 'btDays': BT_DAYS}
+           'idx': {k: v[hoff:] for k, v in idx.items()}, 'chipDays': n20, 'q': hist_q, 'acc': acc_out, 'btDays': BT_DAYS, 'btStep': BT_STEP}
     print('  回測：%s' % acc_out, flush=True)
     with open('history.json', 'w', encoding='utf-8') as fp:
         json.dump(out, fp, ensure_ascii=False, separators=(',', ':'))
