@@ -838,18 +838,20 @@ function makeKChart(cv, tipEl, full, span, kind) {
 /* 法人進場成本：買超那些天用「當天均價（開高低收平均，沒有就收盤）× 買超張數」加權平均。
    同時算賣超均價跟這段期間的淨買賣超，淨賣超的話成本就沒意義 */
 function costEst(s, W) {
+  // 平均成本法：照日期順序，買超的張數用當日均價加進部位，賣超時扣部位、成本不變；最後還握著的那批才是「進場成本」
   const N = s.c.length, from = Math.max(0, N - W), out = {};
   [['fi', '外資'], ['it', '投信'], ['dl', '自營商']].forEach(([k, name]) => {
     const arr = s[k]; if (!arr) return;
-    let bl = 0, ba = 0, sl = 0, sa = 0, days = 0;
+    let bl = 0, ba = 0, sl = 0, sa = 0, days = 0, pos = 0, cost = 0;
     for (let i = from; i < N; i++) {
       const lots = arr[i]; if (lots == null || s.c[i] == null) continue;
       const tp = s.o && s.o[i] != null && s.h && s.h[i] != null && s.l && s.l[i] != null ? (s.o[i] + s.h[i] + s.l[i] + s.c[i]) / 4 : s.c[i];
       days++;
-      if (lots > 0) { bl += lots; ba += lots * tp; } else if (lots < 0) { sl -= lots; sa -= lots * tp; }
+      if (lots > 0) { bl += lots; ba += lots * tp; cost = (cost * pos + lots * tp) / (pos + lots); pos += lots; }
+      else if (lots < 0) { sl -= lots; sa -= lots * tp; pos = Math.max(0, pos + lots); }
     }
     if (!days) return;
-    out[k] = { name, days, net: bl - sl, buyLots: bl, buyCost: bl ? ba / bl : null, sellLots: sl, sellAvg: sl ? sa / sl : null };
+    out[k] = { name, days, net: bl - sl, buyLots: bl, buyAvg: bl ? ba / bl : null, sellLots: sl, sellAvg: sl ? sa / sl : null, pos, buyCost: pos > 0 ? cost : null };
   });
   return out;
 }
@@ -1503,11 +1505,17 @@ function costHtml(s, price) {
   const est = wins.map(([w]) => costEst(s, w));
   const keys = Object.keys(est[1]); if (!keys.length) return '';
   const rel = cost => cost ? ' <small class="' + cls(price - cost) + '">' + pct((price / cost - 1) * 100) + '</small>' : '';
-  const row = k => '<tr><td><span style="color:' + ({ fi: 'var(--fi)', it: 'var(--it)', dl: 'var(--dl)' }[k]) + '">' + est[1][k].name + '</span></td>' +
-    est.map(e => { const a = e[k]; if (!a || a.days < 5) return '<td>—</td><td>—</td>';
-      return '<td class="' + cls(a.net) + '">' + sgn(a.net, 0) + '</td><td>' + (a.buyCost ? fmt(a.buyCost) + rel(a.buyCost) : '—') + '</td>'; }).join('') + '</tr>';
-  return '<h3>法人進場成本（估）</h3><table class="fan cost"><tr><th></th>' + wins.map(([, t]) => '<th>' + t + '淨買賣超</th><th>' + t + '買超均價</th>').join('') + '</tr>' + keys.map(row).join('') + '</table>' +
-    '<p class="hint" style="margin-top:4px">買超均價＝這段期間買超那些天的當日均價（開高低收平均，沒有開高低的用收盤）用買超張數加權，旁邊的小字是現價相對均價；淨賣超的法人成本沒有意義，只看數字參考。K 線圖上的虛線是 60 日買超成本（只畫淨買超的）。</p>';
+  const cell = a => {
+    if (!a || a.days < 5) return '<td>—</td><td>—</td>';
+    let v;
+    if (a.net > 0 && a.buyCost) v = fmt(a.buyCost) + rel(a.buyCost);
+    else if (a.net < 0 && a.sellAvg) v = '<span class="down">賣</span> ' + fmt(a.sellAvg) + rel(a.sellAvg);
+    else v = '—';
+    return '<td class="' + cls(a.net) + '">' + sgn(a.net, 0) + '</td><td>' + v + '</td>';
+  };
+  const row = k => '<tr><td><span style="color:' + ({ fi: 'var(--fi)', it: 'var(--it)', dl: 'var(--dl)' }[k]) + '">' + est[1][k].name + '</span></td>' + est.map(e => cell(e[k])).join('') + '</tr>';
+  return '<h3>法人進場成本（估）</h3><table class="fan cost"><tr><th></th>' + wins.map(([, t]) => '<th>' + t + '淨買賣超</th><th>' + t + '成本</th>').join('') + '</tr>' + keys.map(row).join('') + '</table>' +
+    '<p class="hint" style="margin-top:4px">成本用平均成本法估：照日期順序，買超的張數以當日均價（開高低收平均）加進部位，賣超時扣掉部位、成本不變，最後還握著的那批的平均成本才是進場成本；小字是現價相對成本。淨賣超的法人沒有「進場成本」，改列賣超均價（標「賣」）。K 線圖上的虛線是 60 日的進場成本（只畫淨買超的）。法人真正的庫存成本外界不可能知道，這只是就這段期間的買賣估算。</p>';
 }
 
 /* 搜尋：代號開頭優先，再來是名稱包含 */
