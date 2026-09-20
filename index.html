@@ -231,6 +231,7 @@ footer{margin-top:16px;font-size:11px;color:var(--txt3);line-height:1.6}
   td .c{display:block;margin:0;line-height:1.2}
 }
 .tiles.dec{grid-template-columns:repeat(3,1fr)}.tile .big{font-size:17px;font-weight:700}.tiles.dec .tile em{white-space:nowrap}.tile.dim{opacity:.55}.ai .rule{font-size:12.5px;color:var(--txt2);background:var(--panel2);border:1px solid var(--edge);border-radius:8px;padding:7px 9px;margin:6px 0}.fan td.pick,.fan th.pick{background:rgba(45,212,191,.08)}.fan tr.pick td{color:var(--txt)}
+.ai .entry{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:2px 0 8px;font-size:12.5px}.ai .entry input{width:110px;background:var(--panel2);border:1px solid var(--edge);border-radius:8px;color:var(--txt);padding:5px 8px;font-size:13px;margin-left:6px}
 details.bt{margin:6px 0}details.bt summary{cursor:pointer;font-size:12px;color:var(--txt2)}
 </style>
 </head>
@@ -1351,11 +1352,12 @@ function aiHtml(a, an, price, bt, code) {
       const sideTxt = d.side === 'short' ? '放空' : '做多';
       h += '<div class="tiles dec">' +
         '<div class="tile"><b>進場參考價（' + esc((H.dates[H.dates.length - 1] || '').slice(5).replace('-', '/')) + ' 收盤）</b><span class="big">' + fmt(price) + '</span><em>盤後更新，不是即時價</em></div>' +
-        '<div class="tile' + dim + '"><b>' + (d.act === 'hold' ? '若' + sideTxt + '的目標價' : '目標價') + '</b><span class="big ' + cls(d.T) + '">' + fmt(d.tgt) + '</span><em class="' + cls(d.T) + '">' + pct(d.T) + '</em></div>' +
-        '<div class="tile' + dim + '"><b>停損價</b><span class="big">' + fmt(d.stop) + '</span><em class="' + cls(d.S) + '">' + pct(d.S) + '</em></div>' +
+        '<div class="tile' + dim + '"><b>' + (d.act === 'hold' ? '若' + sideTxt + '的目標價' : '目標價') + '</b><span class="big ' + cls(d.T) + '" id="dTgt">' + fmt(d.tgt) + '</span><em class="' + cls(d.T) + '">' + pct(d.T) + '</em></div>' +
+        '<div class="tile' + dim + '"><b>停損價</b><span class="big" id="dStop">' + fmt(d.stop) + '</span><em class="' + cls(d.S) + '">' + pct(d.S) + '</em></div>' +
         '<div class="tile"><b>先到目標的機率</b><span>' + (d.p != null ? d.p.toFixed(0) + '%' : '—') + '</span><em>門檻 ' + r.W + '%</em></div>' +
         '<div class="tile"><b>風險報酬比</b><span>' + (d.rr != null ? d.rr.toFixed(1) : '—') + '</span><em>要 ≥ 1</em></div>' +
-        '<div class="tile"><b>期望值（每筆）</b><span class="' + cls(d.ev) + '">' + pct(d.ev) + '</span><em>門檻 ' + r.edge.toFixed(1) + '%</em></div></div>';
+        '<div class="tile"><b>期望值（每筆）</b><span class="' + cls(d.ev) + '">' + pct(d.ev) + '</span><em>門檻 ' + r.edge.toFixed(1) + '%</em></div></div>' +
+        '<div class="entry"><label>我的進場價 <input type="number" id="myPx" step="any" placeholder="' + fmt(price) + '"></label><span class="hint" id="myPxOut">輸入實際買到的價位，目標價與停損價照幅度換算</span></div>';
     }
     const why = [];
     if (d.act !== 'hold') why.push('今天符合這檔學出來的規則：相似的 ' + (r.ns || ai_k(code)) + ' 天裡，' + hName(d.h) + '內先碰目標（' + pct(d.T) + '）而不是停損（' + pct(d.S) + '）的比例 ' + d.p.toFixed(0) + '%，期望值每筆 ' + pct(d.ev) + '；這條規則在考卷上' + d.hoTxt);
@@ -1492,6 +1494,7 @@ async function openStock(code, go_) {
         '<a href="https://mops.twse.com.tw/mops/web/t146sb05?co_id=' + esc(code) + '" target="_blank" rel="noopener">公開資訊觀測站</a></div></div>' +
       '</div>' +
     '</div>';
+  const myPx = $('#myPx'); if (myPx) { const d0 = aiFor(code); myPx.oninput = () => { const v = +myPx.value; if (!(v > 0) || !d0 || d0.T == null) { $('#myPxOut').textContent = '輸入實際買到的價位，目標價與停損價照幅度換算'; $('#dTgt').textContent = fmt(d0.tgt); $('#dStop').textContent = fmt(d0.stop); return; } const t = v * (1 + d0.T / 100), st = v * (1 + d0.S / 100); $('#dTgt').textContent = fmt(t); $('#dStop').textContent = fmt(st); $('#myPxOut').innerHTML = '以 ' + fmt(v) + ' 進場：目標 <b>' + fmt(t) + '</b>（' + pct(d0.T) + '）、停損 <b>' + fmt(st) + '</b>（' + pct(d0.S) + '）' + (Math.abs(v / a.c - 1) > .03 ? '。跟參考價差超過 3%，情況已經不太一樣，建議等盤後更新再看' : ''); }; }
   $('#star').onclick = () => { if (WATCH.includes(code)) WATCH = WATCH.filter(c => c !== code); else WATCH.push(code); saveWatch(); openStock(code); renderWatchHome(); };
   const f = ffill(s.c); const c = f.s; const off = f.off; const padN = arr => new Array(off).fill(null).concat(arr);
   // 60 日買超成本畫在 K 線上（只畫這段期間是淨買超的法人）
