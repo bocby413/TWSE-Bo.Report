@@ -1258,7 +1258,7 @@ function ownAnalogs(S, vols, x) {
 /* 排程用五年歷史算好、放在 history.json 的相似情境（跟 ownAnalogs 同一套算法）。
    排行要對兩千多檔查，只能用這份；個股頁也優先用它，兩邊結論才一致 */
 function ownFromHist(code, ai0) {
-  const ai = ai0 || (H.q[code] && H.q[code].ai); if (!ai || !ai['10']) return null;
+  const ai = ai0 || (H.q[code] && H.q[code].ai); if (!ai || !ai[String(HORIZ[0])]) return null;
   const out = { n: ai.n, k: ai.k, x: ai.x, h: {}, pre: true };
   HORIZ.forEach(h => { const v = ai[String(h)]; out.h[h] = v ? { n: v[0], mean: v[1], med: v[2], p25: v[3], p75: v[4], win: v[5] } : null; });
   return out;
@@ -1270,7 +1270,7 @@ function analogsFor(closes, vols, code, x, ai0) {
   if (!own) try { own = ownAnalogs(S, vols, x); } catch (e) { console.error(e); }
   try { mkt = marketAnalogs(S, L); } catch (e) { console.error(e); }
   if (!own && !mkt) return null;
-  const useOwn = !!(own && own.h[10] && own.h[10].n >= 8);
+  const H0 = HORIZ[0]; const useOwn = !!(own && own.h[H0] && own.h[H0].n >= 8);
   return { own, mkt, useOwn, h: useOwn ? own.h : (mkt ? mkt.h : null), span: L + 1 };
 }
 const SIG_TEXT = {
