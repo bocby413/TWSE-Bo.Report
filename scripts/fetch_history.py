@@ -1114,6 +1114,40 @@ def stock_model(closes, vols, highs, lows, dates, chips, mkt):
             continue
         last.append([dates[r['t'] + off], round(x[0] * 100, 2), round(x[1] * 100, 2), 1 if x[4] else (-1 if x[5] else 0), round(x[6] * 100, 2), 'l' if 'l' in r else 's'])
     bt['last'] = last[-2 * BT_LAST::2] if len(last) >= 2 else last
+    # 還沒到期的模擬進場（最近 h 天內、每 20 個交易日一筆）：站在那天算目標停損，看到今天為止先碰到哪個、目前損益
+    Kmdl_cols = [j for j in MODELS[best['mdl']][1] if has_x or j not in (10, 11, 12)]
+    sub = F[:, Kmdl_cols]
+    sd = sub.std(axis=0)
+    sd[sd == 0] = 1
+    Z = sub / sd
+    open_ = []
+    for t in range(L - (L % 20) - 0, max(60, L - h), -20):
+        if t not in pos or t >= L:
+            continue
+        m = int(np.searchsorted(I, t - 5, side='right'))
+        if m < 25:
+            continue
+        picked = _pick_analogs(Z, I, pos[t], m, min(Kb, max(10, m // 3)))[:Kb]
+        pl = _plan(C, RM, RN, picked, h, t)
+        if not pl:
+            continue
+        for side, key2 in ((+1, 'l'), (-1, 's')):
+            if key2 not in pl:
+                continue
+            T, S, p, ev = pl[key2]
+            if not (p * 100 >= best['W'] and ev >= best['edge'] and abs(T) / abs(S) >= RR_MIN):
+                continue                                    # 只列當時真的會出手的
+            n_done = L - t
+            rm = RM[h][t:t + 1, :n_done]
+            rn = RN[h][t:t + 1, :n_done]
+            if rm.shape[1] == 0:
+                continue
+            w, l, pnl = _sim(rm, rn, np.array([float(C[L] / C[t] - 1)]), T, S, side)
+            state = 1 if w[0] else (-1 if l[0] else 0)
+            cur = float(C[L] / C[t] - 1) * side
+            open_.append([dates[t + off], round(T * 100, 2), round(S * 100, 2), state, round(float(pnl[0] if state else cur) * 100, 2), key2, h - n_done])
+            break
+    bt['open'] = open_[:6]
     return ai, bt
 
 

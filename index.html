@@ -233,6 +233,7 @@ footer{margin-top:16px;font-size:11px;color:var(--txt3);line-height:1.6}
 .tiles.dec{grid-template-columns:repeat(3,1fr)}.tiles.dec .tile b{white-space:normal;overflow:visible;line-height:1.3}.tiles.dec .tile em{display:block;margin:2px 0 0;white-space:normal;line-height:1.3}.tiles.dec .tile.due{grid-column:1 / -1;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}.tiles.dec .tile.due b{display:inline;white-space:normal}.tile .big{font-size:17px;font-weight:700}.tiles.dec .tile em{white-space:nowrap}.tile.dim{opacity:.55}.ai .rule{font-size:12.5px;color:var(--txt2);background:var(--panel2);border:1px solid var(--edge);border-radius:8px;padding:7px 9px;margin:6px 0}.fan td.pick,.fan th.pick{background:rgba(45,212,191,.08)}.fan tr.pick td{color:var(--txt)}
 .ai .entry{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:2px 0 8px;font-size:12.5px}.ai .entry input{width:110px;background:var(--panel2);border:1px solid var(--edge);border-radius:8px;color:var(--txt);padding:5px 8px;font-size:13px;margin-left:6px}
 table.plans td,table.plans th{white-space:nowrap}button.mini{background:transparent;border:1px solid var(--edge);color:var(--txt3);border-radius:6px;padding:2px 7px;font-size:11px;cursor:pointer}button.mini:hover{color:var(--txt)}
+.fan tr.open td{background:rgba(245,197,66,.06)}
 details.bt{margin:6px 0}details.bt summary{cursor:pointer;font-size:12px;color:var(--txt2)}
 </style>
 </head>
@@ -1326,7 +1327,11 @@ function accuracyHtml(bt, d) {
     Object.keys(bt.models).map(k => '<tr' + (k === bt.mdl ? ' class="pick"' : '') + '><td>' + esc(MODEL_NAME[k] || k) + (k === bt.mdl ? ' ★' : '') + '</td>' + HORIZ.map(x => { const v = bt.models[k][String(x)]; return '<td>' + (v ? v[1].toFixed(0) + '%／' + (v[2] == null ? '—' : v[2].toFixed(0) + '%') : '—') + '</td>'; }).join('') + '</tr>').join('') + '</table></details>';
   if (bt.last && bt.last.length) {
     const res = x => x[3] === 1 ? '<span class="up">先到目標</span>' : x[3] === -1 ? '<span class="down">先到停損</span>' : '到期結算';
-    h += '<details class="bt"><summary>最近 ' + bt.last.length + ' 次 ' + hName(hz) + ' 模擬進場（每 20 個交易日一筆）</summary><table class="fan"><tr><th>進場日</th><th>方向</th><th>目標</th><th>停損</th><th>結果</th><th>損益</th></tr>' +
+    const opn = (bt.open || []).map(x => '<tr class="open"><td>' + esc(x[0]) + '</td><td>' + (x[5] === 's' ? '放空' : '做多') + '</td><td class="up">' + pct(x[1]) + '</td><td class="down">' + pct(x[2]) + '</td><td>' + (x[3] === 1 ? '<span class="up">已到目標</span>' : x[3] === -1 ? '<span class="down">已到停損</span>' : '進行中・剩 ' + x[6] + ' 日') + '</td><td class="' + cls(x[4]) + '">' + pct(x[4]) + (x[3] ? '' : '<small>（目前）</small>') + '</td></tr>').join('');
+    h += '<details class="bt"><summary>最近 ' + bt.last.length + ' 次 ' + hName(hz) + ' 模擬進場（每 20 個交易日一筆）' + (bt.open && bt.open.length ? '，另有 ' + bt.open.length + ' 筆還沒到期' : '') + '</summary>' +
+      (bt.open && bt.open.length ? '<p class="hint">還沒到期的（' + hName(hz) + '要走完才有結果，所以對完答案的最新一筆會是 ' + hName(hz).replace(/（.*/, '') + '前）：</p>' : '') +
+      '<table class="fan"><tr><th>進場日</th><th>方向</th><th>目標</th><th>停損</th><th>結果</th><th>損益</th></tr>' + opn +
+      (opn ? '<tr><td colspan="6" style="color:var(--txt3);font-size:11px;padding-top:8px">已對完答案的：</td></tr>' : '') +
       bt.last.slice().reverse().map(x => '<tr><td>' + esc(x[0]) + '</td><td>' + (x[5] === 's' ? '放空' : '做多') + '</td><td class="up">' + pct(x[1]) + '</td><td class="down">' + pct(x[2]) + '</td><td>' + res(x) + '</td><td class="' + cls(x[4]) + '">' + pct(x[4]) + '</td></tr>').join('') + '</table></details>';
   }
   h += '<p class="hint">每次模擬都是站在那一天、只用那天以前的資料算出目標與停損，再看之後實際走勢先碰到哪一個（同一天碰到算停損，都沒碰到就到期用收盤結算）。考卷是最近三成的樣本，挑方法、學門檻時完全沒用到。</p>';
