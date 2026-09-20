@@ -256,7 +256,7 @@ details.bt{margin:6px 0}details.bt summary{cursor:pointer;font-size:12px;color:v
     </header>
 
     <section class="view on" id="v-home">
-      <div id="loading" class="card"><div class="empty">正在讀取資料…</div></div>
+      <div id="loading" class="card"><div class="empty">正在讀取資料（第一次約 2 MB，之後會用快取）…</div></div>
       <div id="home" class="hide">
         <div class="strip" id="strip"></div>
         <div class="g g1">
@@ -351,7 +351,8 @@ const isETF = code => /^00/.test(code);
 const isStock = code => /^\d{4}$/.test(code) && !isETF(code);   // 一般個股都是四碼數字；ETF、特別股、TDR 不算
 const sum = a => a.reduce((x, y) => x + (y || 0), 0);
 const MAXS = 11;                                                  // 分數上下限：技術 7 ＋ 籌碼 2 ＋ K 線 1 ＋ 營收 1
-const BUST = () => new Date().toISOString().slice(0, 13);         // 每小時換一次網址，CDN 才不會餵舊檔
+let VER = '';                                                       // ver.json 的版本號（資料更新時間）
+const BUST = () => VER || new Date().toISOString().slice(0, 13);   // 網址帶版本號：資料沒換就讓瀏覽器直接用快取，換了才重抓
 
 let H = null;          // history.json
 let A = {};            // code -> analyze() 的結果，開頁時全部算好，排行跟廣度都從這裡拿
@@ -1254,16 +1255,16 @@ function ownAnalogs(S, vols, x) {
 }
 /* 排程用五年歷史算好、放在 history.json 的相似情境（跟 ownAnalogs 同一套算法）。
    排行要對兩千多檔查，只能用這份；個股頁也優先用它，兩邊結論才一致 */
-function ownFromHist(code) {
-  const ai = H.q[code] && H.q[code].ai; if (!ai) return null;
+function ownFromHist(code, ai0) {
+  const ai = ai0 || (H.q[code] && H.q[code].ai); if (!ai || !ai['10']) return null;
   const out = { n: ai.n, k: ai.k, x: ai.x, h: {}, pre: true };
   HORIZ.forEach(h => { const v = ai[String(h)]; out.h[h] = v ? { n: v[0], mean: v[1], med: v[2], p25: v[3], p75: v[4], win: v[5] } : null; });
   return out;
 }
-function analogsFor(closes, vols, code, x) {
+function analogsFor(closes, vols, code, x, ai0) {
   const S = seriesOf(closes); const L = S.c.length - 1;
   if (L < 60) return null;
-  let own = code ? ownFromHist(code) : null, mkt = null;
+  let own = code ? ownFromHist(code, ai0) : null, mkt = null;
   if (!own) try { own = ownAnalogs(S, vols, x); } catch (e) { console.error(e); }
   try { mkt = marketAnalogs(S, L); } catch (e) { console.error(e); }
   if (!own && !mkt) return null;
@@ -1352,7 +1353,7 @@ function aiHtml(a, an, price, bt, code) {
     if (a.rsi <= 30) why.push('RSI 已超賣，空單追殺風險高');
     h += '<ul class="why">' + why.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>';
   } else h += '<p class="hint">這檔的專屬模型還沒算好（上市不滿一年，或排程還沒跑到）。</p>';
-  const bk = H.q[code] && H.q[code].ai && H.q[code].ai.b;
+  const bk = (bt && bt.ai && bt.ai.b) || (H.q[code] && H.q[code].ai && H.q[code].ai.b);
   if (an && an.h) {
     const row = (name, f) => '<tr><td>' + name + '</td>' + HORIZ.map(x => '<td>' + f(an.h[x], x) + '</td>').join('') + '</tr>';
     const plan = (x, k) => { const v = bk && bk[String(x)] && bk[String(x)][k]; return v ? fmt(price * (1 + v[0] / 100)) + '<br><small>停損 ' + fmt(price * (1 + v[1] / 100)) + '・' + v[2].toFixed(0) + '%</small>' : '—'; };
@@ -1399,7 +1400,7 @@ async function shard(code) {
   const keys = code.startsWith('00') ? [code.slice(0, 4), code.slice(0, 3)] : [code.slice(0, 3), code.slice(0, 2)];
   let sh = null;
   for (const k of keys) {
-    if (!SH.has(k)) SH.set(k, fetch('d/' + k + '.json?_=' + BUST(), { cache: 'no-cache' }).then(r => r.ok ? r.json() : null).catch(() => null));
+    if (!SH.has(k)) SH.set(k, fetch('d/' + k + '.json?v=' + BUST(), { cache: 'default' }).then(r => r.ok ? r.json() : null).catch(() => null));
     sh = await SH.get(k);
     if (sh && sh.q && sh.q[code]) break;
     sh = null;
@@ -1432,7 +1433,7 @@ async function openStock(code, go_) {
   const a = analyze(s.c, s.v, { fi: s.fi, it: s.it, dl: s.dl, mg: s.mg, ms: s.ms, o: s.o, h: s.h, l: s.l, f: s.f, pe: s0.pe, yld: s0.yld });
   if (!a) { el.innerHTML = '<div class="card"><div class="empty">' + esc(s.n) + ' 的資料太少，還判斷不了</div></div>'; return; }
   const on = WATCH.includes(code);
-  let an = null; try { an = analogsFor(s.c, s.v, code, { fi: s.fi, it: s.it, mg: s.mg }); } catch (e) { console.error(e); }
+  let an = null; try { an = analogsFor(s.c, s.v, code, { fi: s.fi, it: s.it, mg: s.mg }, s.ai); } catch (e) { console.error(e); }
   const tiles = [
     ['5 日均線', fmt(a.ma5)], ['20 日均線', fmt(a.ma20)], ['60 日均線', fmt(a.ma60)], ['RSI（14）', a.rsi == null ? '—' : a.rsi.toFixed(0)],
     ['近 20 日', '<span class="' + cls(a.ret20) + '">' + pct(a.ret20) + '</span>'], ['月線乖離', '<span class="' + cls(a.bias20) + '">' + pct(a.bias20) + '</span>'],
@@ -1470,7 +1471,7 @@ async function openStock(code, go_) {
           '<div class="tiles">' + chipTiles.map(tile).join('') + '</div>' + costHtml(s, a.c) + '</div>'
           : '<div class="card" style="margin-top:10px"><p class="hint">這檔還沒有法人與融資資料（排程要再跑一次才會補齊）</p></div>') +
       '</div>' +
-      '<div>' + aiHtml(a, an, a.c, s.bt, code) + '<div class="card" style="margin-top:10px"><h2><i>✓</i>判斷依據</h2><ul class="reasons">' + reasonsHtml(a.reasons) + '</ul></div>' +
+      '<div>' + aiHtml(a, an, a.c, s.bt ? Object.assign({ ai: s.ai }, s.bt) : null, code) + '<div class="card" style="margin-top:10px"><h2><i>✓</i>判斷依據</h2><ul class="reasons">' + reasonsHtml(a.reasons) + '</ul></div>' +
         (fundTiles.length ? '<div class="card" style="margin-top:10px"><h2><i>▤</i>基本面</h2><div class="tiles" style="grid-template-columns:1fr 1fr">' + fundTiles.map(tile).join('') + '</div></div>' : '') +
         '<div class="card" style="margin-top:10px"><h2><i>≡</i>新聞與資料</h2><div class="links"><a href="https://news.google.com/search?q=' + gq + '&hl=zh-TW&gl=TW&ceid=TW:zh-Hant" target="_blank" rel="noopener">Google 新聞</a>' +
         '<a href="https://tw.stock.yahoo.com/quote/' + esc(code) + (s.m === 'tpex' ? '.TWO' : '.TW') + '/news" target="_blank" rel="noopener">Yahoo 股市</a>' +
@@ -1553,7 +1554,8 @@ $('#reload').onclick = () => location.reload();
 /* ── 啟動 ── */
 async function load() {
   let res;
-  try { res = await fetch('history.json?_=' + BUST(), { cache: 'no-cache' }); } catch (e) { res = null; }
+  try { const v = await fetch('ver.json?_=' + Date.now(), { cache: 'no-cache' }); if (v.ok) VER = (await v.json()).updated || ''; } catch (_) { VER = ''; }
+  try { res = await fetch('history.json?v=' + BUST(), { cache: 'default' }); } catch (e) { res = null; }
   if (!res || !res.ok) {
     $('#loading').innerHTML = '<div class="empty"><b>還沒有資料</b><br>到 GitHub 這個 repo 的 Actions 分頁，手動執行一次「收盤價歷史」（第一次要幾十分鐘）；<br>之後每個交易日盤後會自動累積。</div>';
     $('#meta').textContent = '無資料'; $('#dot').style.background = '#ff5a68'; return;
@@ -1562,8 +1564,8 @@ async function load() {
   if (!H.dates || !H.dates.length || !H.q) { $('#loading').innerHTML = '<div class="empty">history.json 是空的，等排程跑過一次再來</div>'; return; }
   for (const c in H.q) { const s = H.q[c]; const a = analyze(s.c, s.v, { fi: s.fi, it: s.it, dl: s.dl, mg: s.mg, ms: s.ms, pe: s.pe, yld: s.yld }); if (a) A[c] = a; }
   $('#meta').textContent = H.dates[H.dates.length - 1] + '・' + Object.keys(H.q).length + ' 檔';
-  try { const r = await fetch('news.json?_=' + BUST(), { cache: 'no-cache' }); NEWS = r.ok ? await r.json() : null; } catch (_) { NEWS = null; }
-  try { const r = await fetch('idx.json?_=' + BUST(), { cache: 'no-cache' }); IDX = r.ok ? await r.json() : null; } catch (_) { IDX = null; }
+  try { const r = await fetch('news.json?v=' + BUST(), { cache: 'default' }); NEWS = r.ok ? await r.json() : null; } catch (_) { NEWS = null; }
+  try { const r = await fetch('idx.json?v=' + BUST(), { cache: 'default' }); IDX = r.ok ? await r.json() : null; } catch (_) { IDX = null; }
   if (IDX && (!IDX.dates || !IDX.c || IDX.dates[IDX.dates.length - 1] !== H.dates[H.dates.length - 1])) IDX = null;   // 跟 history.json 不是同一天就不用
   computeMarket();
   $('#loading').classList.add('hide'); $('#home').classList.remove('hide');

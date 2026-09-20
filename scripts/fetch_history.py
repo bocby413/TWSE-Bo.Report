@@ -27,7 +27,7 @@ from xml.etree import ElementTree
 TPE = timezone(timedelta(hours=8))
 KEEP = 1250             # 每檔收盤與成交量保留幾個交易日，約五年，個股頁找相似情境要用
 KEEP_K = 1250           # 開高低也留五年（一片分片幾百 KB，可以接受）
-HIST_KEEP = 120         # 首頁用的精簡版 history.json 只留這麼多，檔案才不會太大
+HIST_KEEP = 90          # 首頁用的精簡版 history.json 只留這麼多（季線要 60 天），檔案才不會太大
 MIN_CODES = 800         # 少於這個檔數就當抓壞了，不覆蓋舊檔
 CHIP_BACK = 1250        # 法人與融資也補五年（每天要多抓四支，第一次要好幾個小時，從最近的往回補）
 LOOKBACK = 1900         # 往回補最多幾個「日曆日」，1250 個交易日大約是 1830 個日曆日
@@ -1421,7 +1421,8 @@ def main():
                 import traceback
                 print('  模型 %s 失敗：%s' % (code, traceback.format_exc()[-400:]), flush=True)
         if ai and ai.get('10'):
-            h['ai'] = ai
+            s['ai'] = ai                                # 完整版（各尺度統計、目標停損）放分片，個股頁用
+            h['ai'] = {k: ai[k] for k in ('n', 'k', 'x', 'mdl', 'rec') if k in ai}   # 首頁排行只要建議本身
         if bt:
             s['bt'] = bt
             r = ai['rec']
@@ -1455,6 +1456,8 @@ def main():
            'TAIEXo': [clean(taiex_ohl[d][0]) if d in taiex_ohl else None for d in dates],
            'TAIEXh': [clean(taiex_ohl[d][1]) if d in taiex_ohl else None for d in dates],
            'TAIEXl': [clean(taiex_ohl[d][2]) if d in taiex_ohl else None for d in dates]}
+    with open('ver.json', 'w', encoding='utf-8') as fp:            # 幾十 bytes 的版本號：網頁先讀它，其他大檔就能放心讓瀏覽器快取
+        json.dump({'updated': now.strftime('%Y-%m-%d %H:%M'), 'last': dates[-1]}, fp)
     with open('idx.json', 'w', encoding='utf-8') as fp:            # 首頁大盤 K 線用：五年的加權指數開高低收
         json.dump({'dates': dates, 'updated': now.strftime('%Y-%m-%d %H:%M'), 'c': idx['TAIEX'],
                    'o': idx['TAIEXo'], 'h': idx['TAIEXh'], 'l': idx['TAIEXl']},
