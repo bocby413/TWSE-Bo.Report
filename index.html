@@ -230,7 +230,6 @@ footer{margin-top:16px;font-size:11px;color:var(--txt3);line-height:1.6}
   table{font-size:12px} th,td{padding:5px 3px}
   td .c{display:block;margin:0;line-height:1.2}
 }
-.snews{list-style:none;margin:0 0 8px;padding:0}.snews li{display:flex;gap:6px;align-items:baseline;padding:4px 0;border-bottom:1px solid var(--edge);font-size:12.5px;flex-wrap:wrap}.snews a{color:var(--txt);text-decoration:none;flex:1;min-width:0}.snews a:hover{color:var(--accent)}.snews small{color:var(--txt3);white-space:nowrap}.ntag{font-size:10.5px;padding:1px 6px;border-radius:6px;background:rgba(255,255,255,.06);color:var(--txt3);white-space:nowrap}.ntag.up{background:rgba(255,90,104,.15)}.ntag.down{background:rgba(52,211,153,.15)}
 details.bt{margin:6px 0}details.bt summary{cursor:pointer;font-size:12px;color:var(--txt2)}
 </style>
 </head>
@@ -539,15 +538,6 @@ function analyze(closes, vols, x) {
     const ratio = r.ms / r.mg * 100;
     if (ratio >= 20) r.reasons.push({ pts: 0, text: '券資比 ' + ratio.toFixed(1) + '%（融券 ' + fmt(r.ms, 0) + ' 張），空單多，急漲會軋空', note: true });
     else if (r.ms5 != null && r.ms5 > 30 && r.ms >= 100) r.reasons.push({ pts: 0, text: '融券 5 日增加 ' + r.ms5.toFixed(0) + '%（' + fmt(r.ms, 0) + ' 張），有人在放空', note: true });
-  }
-  // ── 消息面：近 7 天新聞用關鍵字粗分利多／利空（排程抓成交值前段班的個股） ──
-  const nw = x.nw ? (Array.isArray(x.nw) ? { n: x.nw[0], p: x.nw[1], q: x.nw[2] } : x.nw) : null;
-  if (nw && nw.n) {
-    r.news = nw;
-    const t = '近 7 天新聞 ' + nw.n + ' 則，利多 ' + nw.p + '、利空 ' + nw.q;
-    if (nw.p - nw.q >= 2) add(1, t + '，消息面偏多', '消息面');
-    else if (nw.q - nw.p >= 2) add(-1, t + '，消息面偏空', '消息面');
-    else add(0, t, '消息面');
   }
   // ── 基本面（只用最新一個月營收的年增率計分，其他列在數字上） ──
   const fd = x.f || {};
@@ -1271,7 +1261,7 @@ function advise(a, an, ac) {
   const n = s10 ? s10.n : 0;
   const agree = act === 'hold' || (act === 'long' && win >= 58) || (act === 'short' && win <= 42);
   const conf = !s10 ? '低' : (n >= 15 && agree) ? '高' : n >= 8 ? '中' : '低';
-  why.push('技術、籌碼、基本面、消息面合計 ' + (score > 0 ? '+' : '') + score + ' 分（' + a.label + '）');
+  why.push('技術、籌碼、基本面合計 ' + (score > 0 ? '+' : '') + score + ' 分（' + a.label + '）');
   if (ac) why.push('這檔回測 ' + ac[0] + ' 次，10 日方向命中 ' + ac[1].toFixed(0) + '%、目標價碰到 ' + ac[2].toFixed(0) + '%' + (acOk ? '，達到門檻（≥ ' + AC_MIN_HIT + '%）' : '，未達門檻（≥ ' + AC_MIN_HIT + '%、≥ ' + AC_MIN_N + ' 次）'));
   if (s10) why.push((an.useOwn ? '這檔過去最像今天的 ' + n + ' 天' : '全市場過去相同條件 ' + n + ' 次') + '，10 日後平均 ' + pct(mean) + '、上漲機率 ' + win.toFixed(0) + '%' + (s20 ? '，20 日後平均 ' + pct(s20.mean) : ''));
   if (an && an.useOwn && an.mkt && an.mkt.h[10]) { const m = an.mkt.h[10]; if ((m.mean > 0) !== (mean > 0)) why.push('但全市場同條件的統計方向相反（10 日後平均 ' + pct(m.mean) + '），要保守看'); }
@@ -1298,12 +1288,6 @@ function accuracyHtml(bt) {
   }
   h += '<p class="hint">「方向猜對」是預估中位數跟實際漲跌同號的比例；「目標價有碰到」是那幾天內最高／最低價有沒有摸到預估價位（預估幅度小的時候很容易到，看方向比較實在）。</p>';
   return h;
-}
-function stockNewsHtml(nw) {
-  if (!nw || !nw.i || !nw.i.length) return '';
-  const tag = v => v > 0 ? '<span class="ntag up">利多</span>' : v < 0 ? '<span class="ntag down">利空</span>' : '<span class="ntag">中性</span>';
-  return '<div class="hint" style="margin-bottom:6px">近 7 天 ' + nw.n + ' 則，利多 <span class="up">' + nw.p + '</span>、利空 <span class="down">' + nw.q + '</span>（關鍵字粗分）</div><ul class="snews">' +
-    nw.i.map(it => '<li>' + tag(it[4]) + '<a href="' + esc(it[1]) + '" target="_blank" rel="noopener">' + esc(it[0]) + '</a><small>' + esc(it[3]) + '・' + esc(fmtDate(it[2])) + '</small></li>').join('') + '</ul>';
 }
 const pct1 = v => v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
 function fmtDate(d) { const t = Date.parse(d); if (isNaN(t)) return ''; const x = new Date(t); return (x.getMonth() + 1) + '/' + x.getDate(); }
@@ -1414,7 +1398,7 @@ async function openStock(code, go_) {
   const dates = det ? det.dates : H.dates;
   const padTail = arr => arr && arr.length < dates.length ? new Array(dates.length - arr.length).fill(null).concat(arr) : arr;
   const s = det ? det.s : Object.assign({}, s0, { fi: padTail(s0.fi), it: padTail(s0.it), dl: padTail(s0.dl), mg: padTail(s0.mg), ms: padTail(s0.ms) });
-  const a = analyze(s.c, s.v, { fi: s.fi, it: s.it, dl: s.dl, mg: s.mg, ms: s.ms, o: s.o, h: s.h, l: s.l, f: s.f, pe: s0.pe, yld: s0.yld, nw: s.nw || s0.nw });
+  const a = analyze(s.c, s.v, { fi: s.fi, it: s.it, dl: s.dl, mg: s.mg, ms: s.ms, o: s.o, h: s.h, l: s.l, f: s.f, pe: s0.pe, yld: s0.yld });
   if (!a) { el.innerHTML = '<div class="card"><div class="empty">' + esc(s.n) + ' 的資料太少，還判斷不了</div></div>'; return; }
   const on = WATCH.includes(code);
   let an = null; try { an = analogsFor(s.c, s.v, code); } catch (e) { console.error(e); }
@@ -1457,7 +1441,7 @@ async function openStock(code, go_) {
       '</div>' +
       '<div>' + aiHtml(a, an, a.c, s.bt) + '<div class="card" style="margin-top:10px"><h2><i>✓</i>判斷依據</h2><ul class="reasons">' + reasonsHtml(a.reasons) + '</ul></div>' +
         (fundTiles.length ? '<div class="card" style="margin-top:10px"><h2><i>▤</i>基本面</h2><div class="tiles" style="grid-template-columns:1fr 1fr">' + fundTiles.map(tile).join('') + '</div></div>' : '') +
-        '<div class="card" style="margin-top:10px"><h2><i>≡</i>新聞與資料</h2>' + stockNewsHtml(s.nw) + '<div class="links"><a href="https://news.google.com/search?q=' + gq + '&hl=zh-TW&gl=TW&ceid=TW:zh-Hant" target="_blank" rel="noopener">Google 新聞</a>' +
+        '<div class="card" style="margin-top:10px"><h2><i>≡</i>新聞與資料</h2><div class="links"><a href="https://news.google.com/search?q=' + gq + '&hl=zh-TW&gl=TW&ceid=TW:zh-Hant" target="_blank" rel="noopener">Google 新聞</a>' +
         '<a href="https://tw.stock.yahoo.com/quote/' + esc(code) + (s.m === 'tpex' ? '.TWO' : '.TW') + '/news" target="_blank" rel="noopener">Yahoo 股市</a>' +
         '<a href="https://mops.twse.com.tw/mops/web/t146sb05?co_id=' + esc(code) + '" target="_blank" rel="noopener">公開資訊觀測站</a></div></div>' +
       '</div>' +
@@ -1545,7 +1529,7 @@ async function load() {
   }
   H = await res.json();
   if (!H.dates || !H.dates.length || !H.q) { $('#loading').innerHTML = '<div class="empty">history.json 是空的，等排程跑過一次再來</div>'; return; }
-  for (const c in H.q) { const s = H.q[c]; const a = analyze(s.c, s.v, { fi: s.fi, it: s.it, dl: s.dl, mg: s.mg, ms: s.ms, pe: s.pe, yld: s.yld, nw: s.nw }); if (a) A[c] = a; }
+  for (const c in H.q) { const s = H.q[c]; const a = analyze(s.c, s.v, { fi: s.fi, it: s.it, dl: s.dl, mg: s.mg, ms: s.ms, pe: s.pe, yld: s.yld }); if (a) A[c] = a; }
   $('#meta').textContent = H.dates[H.dates.length - 1] + '・' + Object.keys(H.q).length + ' 檔';
   try { const r = await fetch('news.json?_=' + BUST(), { cache: 'no-cache' }); NEWS = r.ok ? await r.json() : null; } catch (_) { NEWS = null; }
   try { const r = await fetch('idx.json?_=' + BUST(), { cache: 'no-cache' }); IDX = r.ok ? await r.json() : null; } catch (_) { IDX = null; }

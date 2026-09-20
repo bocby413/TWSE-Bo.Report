@@ -828,54 +828,6 @@ def backtest(closes, vols, highs, lows, dates):
     return out
 
 
-# ── 個股新聞：Google News 近 7 天，用關鍵字粗分利多／利空 ──
-POS_KW = ('創新高', '創高', '新高', '漲停', '大漲', '買超', '加碼', '調升', '上修', '上調', '成長', '轉盈', '獲利', '接單',
-          '訂單', '擴產', '利多', '看好', '強勁', '大單', '庫藏股', '填息', '年增', '季增', '轉強', '突破', '衝高', '走高',
-          '攻頂', '飆', '亮眼', '報喜', '搶進', '布局', '受惠')
-NEG_KW = ('跌停', '大跌', '賣超', '減碼', '調降', '下修', '下調', '衰退', '虧損', '虧', '利空', '看壞', '疲弱', '裁員', '訴訟',
-          '違約', '罰款', '處分', '警示', '注意股', '重挫', '走弱', '跌破', '下滑', '年減', '季減', '停工', '召回', '摔',
-          '重摔', '爆量下跌', '崩', '砍', '減資', '掏空', '停牌', '打入全額交割')
-NEWS_TOP = 200           # 成交值前幾名的股票抓個股新聞
-NEWS_BUDGET = 240        # 個股新聞最多花幾秒
-NWH_KEEP = 500           # 每檔留幾天的新聞分數歷史
-
-
-def news_score(title):
-    p = any(k in title for k in POS_KW)
-    n = any(k in title for k in NEG_KW)
-    return (1 if p else 0) - (1 if n else 0)
-
-
-def fetch_stock_news(cands):
-    """cands: [(代號, 名稱)…]。回 {代號: {'n': 則數, 'p': 利多, 'q': 利空, 'i': [[標題, 連結, 日期, 來源, 分數]…]}}"""
-    t0 = time.time()
-    out = {}
-    for code, name in cands:
-        if time.time() - t0 > NEWS_BUDGET:
-            print('  個股新聞時間到，抓了 %d 檔' % len(out), flush=True)
-            break
-        q = '"%s" when:7d' % name
-        url = ('https://news.google.com/rss/search?q=%s&hl=zh-TW&gl=TW&ceid=TW:zh-Hant' % urllib.parse.quote(q))
-        try:
-            raw = fetch_raw(url, tries=1, timeout=20)
-            root = ElementTree.fromstring(raw.encode('utf-8'))
-        except Exception as e:
-            print('  個股新聞 %s 抓不到：%s' % (code, str(e)[:60]), flush=True)
-            time.sleep(1)
-            continue
-        items = []
-        for it in list(root.iter('item'))[:15]:
-            t = html.unescape(it.findtext('title') or '')
-            if not t or name not in t:                 # 標題裡要有這檔的名字，不然常常是別檔的新聞
-                continue
-            items.append([t, it.findtext('link') or '', it.findtext('pubDate') or '', it.findtext('source') or '', news_score(t)])
-        if items:
-            out[code] = {'n': len(items), 'p': sum(1 for x in items if x[4] > 0), 'q': sum(1 for x in items if x[4] < 0), 'i': items[:6]}
-        time.sleep(.3)
-    print('  個股新聞：%d 檔有新聞（%.0f 秒）' % (len(out), time.time() - t0), flush=True)
-    return out
-
-
 # ── 主流程 ──
 KEYS = ('o', 'h', 'l', 'c', 'v', 'fi', 'it', 'dl', 'mg', 'ms')
 
@@ -916,7 +868,7 @@ def load_store():
                 continue
             sd = sh.get('dates') or []
             for code, s in (sh.get('q') or {}).items():
-                info[code] = {'n': s.get('n', ''), 'm': s.get('m', ''), 'f': s.get('f') or {}, 'nwh': s.get('nwh') or []}
+                info[code] = {'n': s.get('n', ''), 'm': s.get('m', ''), 'f': s.get('f') or {}}
                 # 新格式：o/h/l 放在 k 區塊、法人融資放在 x 區塊，各自有 from（在 dates 裡的起始位置）
                 cols = {}
                 for k in ('c', 'v'):
@@ -1144,19 +1096,6 @@ def main():
         news = fetch_news()
     except Exception as e:
         print('  新聞整個失敗：%s' % e, flush=True)
-    # 成交值前 NEWS_TOP 名抓個股新聞
-    snews = {}
-    try:
-        lastd = sorted(days)[-1]
-        turn = []
-        for code, row in days[lastd].items():
-            if code in info and row.get('c') and row.get('v') and info[code].get('n'):
-                turn.append((row['c'] * row['v'], code))
-        turn.sort(reverse=True)
-        snews = fetch_stock_news([(code, info[code]['n']) for _, code in turn[:NEWS_TOP]])
-    except Exception as e:
-        print('  個股新聞整個失敗：%s' % e, flush=True)
-
     # 5. 寫檔
     dates = sorted(days)[-KEEP:]
     skip = sorted(d for d in skip if d >= (today - timedelta(days=LOOKBACK + 30)).isoformat())
@@ -1189,15 +1128,6 @@ def main():
                 s['x'][k] = tail
         if m.get('f'):
             s['f'] = m['f']
-        nwh = list(m.get('nwh') or [])                  # 每天的新聞分數留下來（[日期, 則數, 利多, 利空]），以後回測消息面要用
-        if code in snews:
-            s['nw'] = snews[code]
-            if not nwh or nwh[-1][0] != dates[-1]:
-                nwh.append([dates[-1], snews[code]['n'], snews[code]['p'], snews[code]['q']])
-            else:
-                nwh[-1] = [dates[-1], snews[code]['n'], snews[code]['p'], snews[code]['q']]
-        if nwh:
-            s['nwh'] = nwh[-NWH_KEEP:]
         shards.setdefault(shard_of(code), {})[code] = s
         h = {'n': s['n'], 'm': s['m'], 'c': series['c'][hoff:], 'v': series['v'][hoff:]}
         try:
@@ -1221,8 +1151,6 @@ def main():
                     acc[hz][0] += st[0]
                     for j in (1, 2, 3):
                         acc[hz][j] += st[j] * st[0]
-        if code in snews:
-            h['nw'] = [snews[code]['n'], snews[code]['p'], snews[code]['q']]
         for k in ('fi', 'it', 'dl', 'mg', 'ms'):
             tail = series[k][off:]
             if any(v is not None for v in tail):
