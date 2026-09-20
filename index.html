@@ -296,7 +296,7 @@ details.bt{margin:6px 0}details.bt summary{cursor:pointer;font-size:12px;color:v
           <button data-t="fiBuy">外資買超</button><button data-t="fiSell">外資賣超</button><button data-t="itBuy">投信買超</button><button data-t="itSell">投信賣超</button><button data-t="dlBuy">自營商買超</button><button data-t="dlSell">自營商賣超</button><button data-t="mgUp">融資增加</button><button data-t="mgDown">融資減少</button><button data-t="msUp">融券增加</button><button data-t="msDown">融券減少</button>
           <button data-t="aiLong">AI 建議做多</button><button data-t="aiShort">AI 建議做空</button>
         </div>
-        <p class="hint hide" id="aiHint">AI 建議排行：以各檔自己五年的歷史為準（排程每天算好），找出跟今天最像的日子，10 日後的平均漲跌與勝率要跟綜合分數站在同一邊，而且這檔自己的回測命中率要 ≥ 60%（至少 40 次）才列進來。欄位是「相似情境 10 日後平均漲跌／上漲機率／這檔回測的方向命中率」，跟個股頁的 AI 建議是同一份結果。不是投資建議。<span id="accAll"></span></p>
+        <p class="hint hide" id="aiHint">AI 建議排行：以各檔自己五年的歷史為準（排程每天算好），找出跟今天最像的日子，10 日後的平均漲跌與勝率要跟綜合分數站在同一邊，而且這檔自己的回測 10 日方向命中率要 ≥ 70%（至少 40 次）才列進來。欄位是「相似情境 10 日後平均漲跌／上漲機率／這檔回測的方向命中率」，跟個股頁的 AI 建議是同一份結果。不是投資建議。<span id="accAll"></span></p>
         <div class="filters">
           <select id="fMarket"><option value="">上市＋上櫃</option><option value="twse">只看上市</option><option value="tpex">只看上櫃</option></select>
           <select id="fVol"><option value="500">日均量 ≥ 500 張</option><option value="2000">日均量 ≥ 2000 張</option><option value="5000">日均量 ≥ 5000 張</option><option value="0">不限量</option></select>
@@ -1016,7 +1016,7 @@ function renderNews() {
 }
 
 /* ── 排行：一套名單邏輯，總覽、排行榜、法人動向都用 ── */
-const accCell = c => { const ac = H.q[c] && H.q[c].ac; return ac ? '<span class="' + (ac[1] >= 60 ? 'up' : ac[1] < 50 ? 'down' : '') + '">' + ac[1].toFixed(0) + '%</span>' : '—'; };
+const accCell = c => { const ac = H.q[c] && H.q[c].ac; return ac ? '<span class="' + (ac[1] >= AC_MIN_HIT ? 'up' : ac[1] < 50 ? 'down' : '') + '">' + ac[1].toFixed(0) + '%</span>' : '—'; };
 const RANK = {
   strong: { col: '20 日', val: a => a.ret20, key: a => a.score * 100 + a.ret20 },
   weak:   { col: '20 日', val: a => a.ret20, key: a => -(a.score * 100 + a.ret20) },
@@ -1264,7 +1264,7 @@ const SIG_TEXT = {
   pb: ['區間低檔', '區間中段', '區間高檔'], tb: ['20 日跌逾 5%', '20 日持平', '20 日漲逾 5%'],
 };
 /* 綜合分數與歷史統計，給一個做多／觀望／做空 */
-const AC_MIN_N = 40, AC_MIN_HIT = 60;   // 回測至少幾次、10 日方向命中率至少幾 % 才敢給做多／做空
+const AC_MIN_N = 40, AC_MIN_HIT = 70;   // 回測至少幾次、10 日方向命中率至少幾 % 才敢給做多／做空
 function advise(a, an, ac) {
   const s10 = an && an.h && an.h[10], s20 = an && an.h && an.h[20];
   const score = a.score, mean = s10 ? s10.mean : null, win = s10 ? s10.win : null;
@@ -1294,7 +1294,7 @@ function advise(a, an, ac) {
 function accuracyHtml(bt) {
   if (!bt || !bt['10']) return '<p class="hint" style="margin-top:6px">準確度：排程下次跑完才會有這檔的回測結果。</p>';
   const cell = (k, f) => HORIZ.map(x => { const v = bt[String(x)]; return '<td>' + (v ? f(v) : '—') + '</td>'; }).join('');
-  const tone = v => v >= 60 ? 'up' : v < 50 ? 'down' : '';
+  const tone = v => v >= AC_MIN_HIT ? 'up' : v < 50 ? 'down' : '';
   let h = '<h3>這套方法在這檔準不準 <small>回測近 ' + (H.btDays || 120) + ' 個交易日，每天只用當天以前的資料預測</small></h3>' +
     '<table class="fan"><tr><th></th>' + HORIZ.map(x => '<th>' + x + ' 日</th>').join('') + '</tr>' +
     '<tr><td>預測次數</td>' + cell('n', v => v[0]) + '</tr>' +
