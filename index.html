@@ -202,7 +202,7 @@ table.cost td:first-child{font-weight:600;font-size:12.5px}
 .filters select{background:var(--deep);border:1px solid var(--edge2);border-radius:8px;padding:4px 8px}
 .filters label{display:inline-flex;gap:5px;align-items:center;cursor:pointer}
 table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
-th{font-size:11.5px;color:var(--txt3);font-weight:500;text-align:right;padding:6px 6px;border-bottom:1px solid var(--edge);white-space:nowrap}
+th{font-size:11.5px;color:var(--txt3);font-weight:500;text-align:right;padding:6px 6px;border-bottom:1px solid var(--edge);white-space:nowrap}th.sk{cursor:pointer;user-select:none}th.sk:hover{color:var(--txt)}th.sk.on{color:var(--accent)}
 td{padding:6px 6px;text-align:right;border-bottom:1px solid var(--edge);white-space:nowrap}
 th:first-child,td:first-child{text-align:left}
 tr.r{cursor:pointer} tr.r:hover td{background:var(--panel2)}
@@ -1026,6 +1026,17 @@ function renderNews() {
 }
 
 /* ── 排行：一套名單邏輯，總覽、排行榜、法人動向都用 ── */
+/* AI 建議的分頁拆成多欄，每欄都能點標題排序（再點一次反向） */
+const AI_COLS = [
+  { k: 'h',  name: '波段',   key: (a, c) => aiFor(c).h, fmt: (a, c) => HNAME[aiFor(c).h] || aiFor(c).h + ' 日' },
+  { k: 'T',  name: '目標',   key: (a, c) => Math.abs(aiFor(c).T), fmt: (a, c) => { const d = aiFor(c); return '<span class="' + cls(d.T) + '">' + pct(d.T) + '</span>'; } },
+  { k: 'S',  name: '停損',   key: (a, c) => -Math.abs(aiFor(c).S), fmt: (a, c) => pct(aiFor(c).S) },
+  { k: 'rr', name: '風報比', key: (a, c) => aiFor(c).rr || 0, fmt: (a, c) => { const d = aiFor(c); return d.rr == null ? '—' : d.rr.toFixed(1); } },
+  { k: 'p',  name: '先到目標機率', key: (a, c) => aiFor(c).p || 0, fmt: (a, c) => aiFor(c).p.toFixed(0) + '%' },
+  { k: 'ev', name: '期望值', key: (a, c) => aiFor(c).ev || 0, fmt: (a, c) => { const d = aiFor(c); return '<span class="' + cls(d.ev) + '">' + pct(d.ev) + '</span>'; } },
+  { k: 'ho', name: '考卷每筆', key: (a, c) => aiFor(c).r.ho[2] || 0, fmt: (a, c) => { const d = aiFor(c); return d.r.ho[2] == null ? '—' : '<span class="' + cls(d.r.ho[2]) + '">' + pct(d.r.ho[2]) + '</span><small style="color:var(--txt3)"> ' + d.r.ho[0] + '次</small>'; } },
+];
+let SORT = { k: null, dir: -1 };   // 目前點選的欄位與方向（-1 大到小）
 const aiCell = d => (HNAME[d.h] || d.h + ' 日') + '・目標 <span class="' + cls(d.T) + '">' + pct(d.T) + '</span>・停損 ' + pct(d.S) + '・機率 ' + d.p.toFixed(0) + '%・考卷 ' + (d.r.ho[2] == null ? '—' : pct(d.r.ho[2]) + '/筆');
 const RANK = {
   strong: { col: '20 日', val: a => a.ret20, key: a => a.score * 100 + a.ret20 },
@@ -1045,8 +1056,8 @@ const RANK = {
   mgDown: { col: '融資 5 日', val: a => a.mg5, key: a => -a.mg5, only: a => a.mg5 != null && a.mg5 < 0 && a.mg >= 500 },
   msUp:   { col: '融券 5 日增減(張)', val: a => a.msChg, key: a => a.msChg, only: a => a.msChg > 0, raw: true },
   msDown: { col: '融券 5 日增減(張)', val: a => a.msChg, key: a => -a.msChg, only: a => a.msChg < 0, raw: true },
-  aiLong:  { col: '波段／目標／停損／先到目標機率／考卷每筆', only: (a, c) => { const d = aiFor(c); return d && d.act === 'long'; }, key: (a, c) => { const d = aiFor(c); return (d.ev || 0) * 100 + (d.r.ho[2] || 0); }, fmtv: (a, c) => aiCell(aiFor(c)) },
-  aiShort: { col: '波段／目標／停損／先到目標機率／考卷每筆', only: (a, c) => { const d = aiFor(c); return d && d.act === 'short'; }, key: (a, c) => { const d = aiFor(c); return (d.ev || 0) * 100 + (d.r.ho[2] || 0); }, fmtv: (a, c) => aiCell(aiFor(c)) },
+  aiLong:  { cols: AI_COLS, only: (a, c) => { const d = aiFor(c); return d && d.act === 'long'; }, key: (a, c) => { const d = aiFor(c); return (d.ev || 0) * 100 + (d.r.ho[2] || 0); } },
+  aiShort: { cols: AI_COLS, only: (a, c) => { const d = aiFor(c); return d && d.act === 'short'; }, key: (a, c) => { const d = aiFor(c); return (d.ev || 0) * 100 + (d.r.ho[2] || 0); } },
   belowFi: { col: '60 日外資成本／現價折價／淨買超', only: (a, c) => { const x = H.q[c].cs && H.q[c].cs.fi; return x && x[0] > 0 && x[1] && a.c < x[1]; }, key: (a, c) => { const x = H.q[c].cs.fi; return x[1] / a.c - 1; }, fmtv: (a, c) => { const x = H.q[c].cs.fi; return fmt(x[1]) + ' ／ <span class="down">' + pct((a.c / x[1] - 1) * 100) + '</span> ／ +' + fmt(x[0], 0) + ' 張'; } },
   belowIt: { col: '60 日投信成本／現價折價／淨買超', only: (a, c) => { const x = H.q[c].cs && H.q[c].cs.it; return x && x[0] > 0 && x[1] && a.c < x[1]; }, key: (a, c) => { const x = H.q[c].cs.it; return x[1] / a.c - 1; }, fmtv: (a, c) => { const x = H.q[c].cs.it; return fmt(x[1]) + ' ／ <span class="down">' + pct((a.c / x[1] - 1) * 100) + '</span> ／ +' + fmt(x[0], 0) + ' 張'; } },
   belowDl: { col: '60 日自營商成本／現價折價／淨買超', only: (a, c) => { const x = H.q[c].cs && H.q[c].cs.dl; return x && x[0] > 0 && x[1] && a.c < x[1]; }, key: (a, c) => { const x = H.q[c].cs.dl; return x[1] / a.c - 1; }, fmtv: (a, c) => { const x = H.q[c].cs.dl; return fmt(x[1]) + ' ／ <span class="down">' + pct((a.c / x[1] - 1) * 100) + '</span> ／ +' + fmt(x[0], 0) + ' 張'; } },
@@ -1061,24 +1072,28 @@ function rankList(tab, o) {
     if ((a.vol20 || 0) < (o.minV == null ? 500 : o.minV)) return false;
     return !R.only || R.only(a, c);
   });
-  list.sort((x, y) => R.key(A[y], y) - R.key(A[x], x));
+  const col = R.cols && SORT.k ? R.cols.find(c => c.k === SORT.k) : null;
+  if (col) list.sort((x, y) => (col.key(A[y], y) - col.key(A[x], x)) * -SORT.dir);
+  else list.sort((x, y) => R.key(A[y], y) - R.key(A[x], x));
   return list.slice(0, o.limit || 30);
 }
 let TAB = 'strong';
-$('#tabs').onclick = e => { const b = e.target.closest('button'); if (!b) return; TAB = b.dataset.t; $('#tabs').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); renderRank(); };
+$('#tabs').onclick = e => { const b = e.target.closest('button'); if (!b) return; TAB = b.dataset.t; SORT = { k: null, dir: -1 }; $('#tabs').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); renderRank(); };
 ['#fMarket', '#fVol', '#fEtf'].forEach(s => $(s).onchange = renderRank);
 function tableHtml(list, R) {
   if (!list.length) return '<tr><td class="empty" style="text-align:center">' + (/^(fi|it|dl|mg|ms)/.test(TAB) ? '還沒有法人／融資資料，排程要再跑一次才會有' : /^ai/.test(TAB) ? '今天沒有符合自己規則、而且考卷及格的股票（也可能被上方的市場／成交量篩選掉了，試試把最低成交量調低）' : /^below/.test(TAB) ? (H.q[Object.keys(H.q)[0]].cs ? '今天沒有符合的股票' : '排程下次跑完才會有成本資料') : '這個條件下沒有符合的股票') + '</td></tr>';
-  return '<tr><th>股票</th><th>收盤</th><th>漲跌</th><th>' + R.col + '</th><th>判斷</th><th class="hide-sm">近 20 日</th></tr>' +
+  const heads = R.cols ? R.cols.map(col => '<th class="sk' + (SORT.k === col.k ? ' on' : '') + '" data-sk="' + col.k + '">' + col.name + (SORT.k === col.k ? (SORT.dir < 0 ? ' ▼' : ' ▲') : ' ⇅') + '</th>').join('') : '<th>' + R.col + '</th>';
+  return '<tr><th>股票</th><th>收盤</th><th>漲跌</th>' + heads + '<th>判斷</th><th class="hide-sm">近 20 日</th></tr>' +
     list.map(c => { const a = A[c], s = H.q[c]; const v = R.val ? R.val(a, c) : null;
-      const cell = R.fmtv ? R.fmtv(a, c) : '<span class="' + cls(v) + '">' + (R.raw ? sgn(v, 0) : pct(v)) + '</span>';
+      const cell = R.cols ? R.cols.map(col => '<td>' + col.fmt(a, c) + '</td>').join('') : '<td>' + (R.fmtv ? R.fmtv(a, c) : '<span class="' + cls(v) + '">' + (R.raw ? sgn(v, 0) : pct(v)) + '</span>') + '</td>';
       return '<tr class="r" data-c="' + c + '"><td><span class="n">' + esc(s.n) + '</span><span class="c">' + esc(c) + (s.m === 'tpex' ? ' 櫃' : '') + '</span></td>' +
-        '<td>' + fmt(a.c) + '</td><td class="' + cls(a.chg) + '">' + pct(a.pct) + '</td><td>' + cell + '</td>' +
+        '<td>' + fmt(a.c) + '</td><td class="' + cls(a.chg) + '">' + pct(a.pct) + '</td>' + cell +
         '<td>' + badgeHtml(a, 'tag') + '</td><td class="hide-sm"><canvas data-s="' + c + '"></canvas></td></tr>'; }).join('');
 }
 function bindTable(t) {
   t.querySelectorAll('canvas[data-s]').forEach(cv => sparkline(cv, H.q[cv.dataset.s].c.slice(-20)));
   t.querySelectorAll('tr.r').forEach(tr => tr.onclick = () => openStock(tr.dataset.c, true));
+  t.querySelectorAll('th.sk').forEach(th => th.onclick = () => { const k = th.dataset.sk; SORT = SORT.k === k ? { k, dir: -SORT.dir } : { k, dir: -1 }; renderRank(); });
 }
 function renderRank() {
   $('#aiHint').classList.toggle('hide', !/^ai/.test(TAB));
