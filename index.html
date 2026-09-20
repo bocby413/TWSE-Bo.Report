@@ -1408,7 +1408,7 @@ async function openStock(code, go_) {
   const s0 = H.q[code]; if (!s0) return;
   CUR = code;
   if (go_) go('stock');
-  if (location.hash !== '#' + code) history.replaceState(null, '', '#' + code);
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);   // 網址不帶代號，重新整理永遠回首頁
   renderWatchView();
   const el = $('#detail');
   if (!el.querySelector('.head')) el.innerHTML = '<div class="card"><div class="empty">讀取 ' + esc(s0.n) + '…</div></div>';
@@ -1556,10 +1556,7 @@ async function load() {
   computeMarket();
   $('#loading').classList.add('hide'); $('#home').classList.remove('hide');
   renderHome();
-  const first = decodeURIComponent(location.hash.slice(1)).toUpperCase();
-  if (H.q[first]) openStock(first, true);
 }
-window.addEventListener('hashchange', () => { const c = decodeURIComponent(location.hash.slice(1)).toUpperCase(); if (H && H.q[c] && c !== CUR) openStock(c, true); });
 let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { if (!H) return; renderHome(); RENDERED.chips = 0; if ($('#v-chips').classList.contains('on')) { renderChipsView(); RENDERED.chips = 1; } if (CUR && $('#v-stock').classList.contains('on')) openStock(CUR); }, 150); });
 load();
 </script>
