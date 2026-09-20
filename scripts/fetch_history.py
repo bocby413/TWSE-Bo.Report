@@ -628,7 +628,7 @@ def fetch_news():
 # ── 個股相似情境（跟 index.html 的 ownAnalogs 同一套，改了要兩邊一起改） ──
 # 把過去每一天的技術狀態算成一組數字，標準化後找跟今天最像的幾天，看它們之後 5／10／20 天怎麼走。
 # 排行要對兩千多檔查，瀏覽器載不動每檔五年的資料，所以在這裡算好放進 history.json
-HORIZ = (5, 10, 20)
+HORIZ = (20, 40, 60, 120)     # 波段用的尺度：約 1 個月、2 個月、一季、半年（交易日）
 
 
 def _ffill(a):
@@ -798,9 +798,9 @@ def own_analogs(closes, vols, chips=None):
     return out
 
 
-BT_DAYS = 500            # 回測最近幾個交易日（約兩年）
-BT_STEP = 5              # 每隔幾個交易日預測一次：連續每天預測會互相重疊，看起來準不代表真的準
-BT_LAST = 20             # 「預測 vs 實際」列最近幾筆（每兩個取樣一筆，等於每 10 個交易日一筆、10 日窗口不重疊）
+BT_DAYS = 750            # 回測最近幾個交易日（約三年；半年波段的考卷才有足夠筆數）
+BT_STEP = 10             # 每隔幾個交易日模擬進場一次：太密會互相重疊，看起來準不代表真的準
+BT_LAST = 20             # 「模擬進場」列最近幾筆（每兩個取樣一筆，等於每 20 個交易日一筆）
 TRAIN_FRAC = .7          # 回測樣本前七成拿來替這檔挑方法、學門檻，後三成當考卷（沒看過的資料）
 MODELS = {               # 每檔試四種方法，特徵欄位見 _full_features
     'A': ('純技術面', list(range(10))),
@@ -969,8 +969,6 @@ def stock_model(closes, vols, highs, lows, dates, chips, mkt):
     ts = [t for t in ts if t in pos]
     if len(ts) < 40:
         return None, None
-    n_tr = int(len(ts) * TRAIN_FRAC)
-    t_split = ts[n_tr - 1]
     models = {}
     for key, (name, cols) in MODELS.items():
         if not has_x and key == 'B':
@@ -1028,8 +1026,8 @@ def stock_model(closes, vols, highs, lows, dates, chips, mkt):
             P = mdl['preds'][h]
             if len(P) < 30:
                 continue
-            tr = [r for r in P if r['t'] <= t_split]
-            ho = [r for r in P if r['t'] > t_split]
+            n_tr = int(len(P) * TRAIN_FRAC)                 # 每個尺度各自切：長尺度最後那段沒答案的樣本不算，考卷才不會空掉
+            tr, ho = P[:n_tr], P[n_tr:]
             dir_all = sum(1 for r in P if (r['med'] >= 0) == (r['act'] >= 0)) / len(P) * 100
             dir_ho = (sum(1 for r in ho if (r['med'] >= 0) == (r['act'] >= 0)) / len(ho) * 100) if ho else None
             table[key][str(h)] = [len(P), round(dir_all, 1), round(dir_ho, 1) if dir_ho is not None else None]
