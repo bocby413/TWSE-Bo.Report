@@ -295,8 +295,9 @@ details.bt{margin:6px 0}details.bt summary{cursor:pointer;font-size:12px;color:v
           <button data-t="strong" class="on">強勢股</button><button data-t="weak">弱勢股</button><button data-t="gain">漲幅</button><button data-t="lose">跌幅</button>
           <button data-t="high">創 60 日新高</button><button data-t="low">創 60 日新低</button><button data-t="vol">量能放大</button>
           <button data-t="fiBuy">外資買超</button><button data-t="fiSell">外資賣超</button><button data-t="itBuy">投信買超</button><button data-t="itSell">投信賣超</button><button data-t="dlBuy">自營商買超</button><button data-t="dlSell">自營商賣超</button><button data-t="mgUp">融資增加</button><button data-t="mgDown">融資減少</button><button data-t="msUp">融券增加</button><button data-t="msDown">融券減少</button>
-          <button data-t="aiLong">AI 建議做多</button><button data-t="aiShort">AI 建議做空</button>
+          <button data-t="aiLong">AI 建議做多</button><button data-t="aiShort">AI 建議做空</button><button data-t="belowFi">外資成本下買超</button><button data-t="belowIt">投信成本下買超</button><button data-t="belowDl">自營成本下買超</button>
         </div>
+        <p class="hint hide" id="belowHint">條件：這個法人最近 60 個交易日是淨買超，而且現價低於他們這 60 天的進場成本（平均成本法，跟個股頁同一套）。依折價幅度排序，折越深排越前面；理論上是法人套牢、若持續買超代表他們願意往下承接，但也可能只是看錯，搭配 AI 判斷一起看。</p>
         <p class="hint hide" id="aiHint">AI 建議排行（波段，1 個月到半年）：每檔都有自己的模型（排程每天重算）：各自從四種方法、四種波段尺度裡挑對它最賺的，出手門檻也是從它自己的歷史學出來、再用最近三成沒看過的資料當考卷驗證。今天符合自己規則、而且考卷及格的才列進來。欄位是「目標價／停損價的幅度、相似日子先碰目標的機率、考卷段平均每筆損益」，跟個股頁的 AI 判斷是同一份結果。目標與停損都來自相似日子的實際最高／最低價路徑，不是收盤中位數。不是投資建議。<span id="accAll"></span></p>
         <div class="filters">
           <select id="fMarket"><option value="">上市＋上櫃</option><option value="twse">只看上市</option><option value="tpex">只看上櫃</option></select>
@@ -1045,6 +1046,9 @@ const RANK = {
   msDown: { col: '融券 5 日增減(張)', val: a => a.msChg, key: a => -a.msChg, only: a => a.msChg < 0, raw: true },
   aiLong:  { col: '波段／目標／停損／先到目標機率／考卷每筆', only: (a, c) => { const d = aiFor(c); return d && d.act === 'long'; }, key: (a, c) => { const d = aiFor(c); return (d.ev || 0) * 100 + (d.r.ho[2] || 0); }, fmtv: (a, c) => aiCell(aiFor(c)) },
   aiShort: { col: '波段／目標／停損／先到目標機率／考卷每筆', only: (a, c) => { const d = aiFor(c); return d && d.act === 'short'; }, key: (a, c) => { const d = aiFor(c); return (d.ev || 0) * 100 + (d.r.ho[2] || 0); }, fmtv: (a, c) => aiCell(aiFor(c)) },
+  belowFi: { col: '60 日外資成本／現價折價／淨買超', only: (a, c) => { const x = H.q[c].cs && H.q[c].cs.fi; return x && x[0] > 0 && x[1] && a.c < x[1]; }, key: (a, c) => { const x = H.q[c].cs.fi; return x[1] / a.c - 1; }, fmtv: (a, c) => { const x = H.q[c].cs.fi; return fmt(x[1]) + ' ／ <span class="down">' + pct((a.c / x[1] - 1) * 100) + '</span> ／ +' + fmt(x[0], 0) + ' 張'; } },
+  belowIt: { col: '60 日投信成本／現價折價／淨買超', only: (a, c) => { const x = H.q[c].cs && H.q[c].cs.it; return x && x[0] > 0 && x[1] && a.c < x[1]; }, key: (a, c) => { const x = H.q[c].cs.it; return x[1] / a.c - 1; }, fmtv: (a, c) => { const x = H.q[c].cs.it; return fmt(x[1]) + ' ／ <span class="down">' + pct((a.c / x[1] - 1) * 100) + '</span> ／ +' + fmt(x[0], 0) + ' 張'; } },
+  belowDl: { col: '60 日自營商成本／現價折價／淨買超', only: (a, c) => { const x = H.q[c].cs && H.q[c].cs.dl; return x && x[0] > 0 && x[1] && a.c < x[1]; }, key: (a, c) => { const x = H.q[c].cs.dl; return x[1] / a.c - 1; }, fmtv: (a, c) => { const x = H.q[c].cs.dl; return fmt(x[1]) + ' ／ <span class="down">' + pct((a.c / x[1] - 1) * 100) + '</span> ／ +' + fmt(x[0], 0) + ' 張'; } },
 };
 function rankList(tab, o) {
   const R = RANK[tab]; o = o || {};
@@ -1063,7 +1067,7 @@ let TAB = 'strong';
 $('#tabs').onclick = e => { const b = e.target.closest('button'); if (!b) return; TAB = b.dataset.t; $('#tabs').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); renderRank(); };
 ['#fMarket', '#fVol', '#fEtf'].forEach(s => $(s).onchange = renderRank);
 function tableHtml(list, R) {
-  if (!list.length) return '<tr><td class="empty" style="text-align:center">' + (/^(fi|it|dl|mg|ms)/.test(TAB) ? '還沒有法人／融資資料，排程要再跑一次才會有' : /^ai/.test(TAB) ? '今天沒有符合自己規則、而且考卷及格的股票（也可能被上方的市場／成交量篩選掉了，試試把最低成交量調低）' : '這個條件下沒有符合的股票') + '</td></tr>';
+  if (!list.length) return '<tr><td class="empty" style="text-align:center">' + (/^(fi|it|dl|mg|ms)/.test(TAB) ? '還沒有法人／融資資料，排程要再跑一次才會有' : /^ai/.test(TAB) ? '今天沒有符合自己規則、而且考卷及格的股票（也可能被上方的市場／成交量篩選掉了，試試把最低成交量調低）' : /^below/.test(TAB) ? (H.q[Object.keys(H.q)[0]].cs ? '今天沒有符合的股票' : '排程下次跑完才會有成本資料') : '這個條件下沒有符合的股票') + '</td></tr>';
   return '<tr><th>股票</th><th>收盤</th><th>漲跌</th><th>' + R.col + '</th><th>判斷</th><th class="hide-sm">近 20 日</th></tr>' +
     list.map(c => { const a = A[c], s = H.q[c]; const v = R.val ? R.val(a, c) : null;
       const cell = R.fmtv ? R.fmtv(a, c) : '<span class="' + cls(v) + '">' + (R.raw ? sgn(v, 0) : pct(v)) + '</span>';
@@ -1077,6 +1081,7 @@ function bindTable(t) {
 }
 function renderRank() {
   $('#aiHint').classList.toggle('hide', !/^ai/.test(TAB));
+  const bh = $('#belowHint'); if (bh) bh.classList.toggle('hide', !/^below/.test(TAB));
   const AC = H.acc && (H.acc['60'] || H.acc['20']); if (AC && $('#accAll')) $('#accAll').innerHTML = '<br><b>整體</b>（全市場各檔挑中的方法、近 ' + (H.btDays || 750) + ' 個交易日、每 ' + (H.btStep || 10) + ' 個交易日模擬一次、共 ' + fmt(AC[0], 0) + ' 次）：一季方向命中率 <b>' + AC[1].toFixed(1) + '%</b>、做多計畫先到目標 ' + AC[2].toFixed(0) + '%、平均每筆 ' + pct(AC[3]) + '（含練習段，偏樂觀；個股頁的考卷才是真的）。';
   const list = rankList(TAB, { mk: $('#fMarket').value, minV: +$('#fVol').value, etf: $('#fEtf').checked, limit: 30 });
   const t = $('#rankTable'); t.innerHTML = tableHtml(list, RANK[TAB]); bindTable(t);

@@ -1105,6 +1105,70 @@ def stock_model(closes, vols, highs, lows, dates, chips, mkt):
     return ai, bt
 
 
+def adjust_splits(series, code):
+    """還原拆股／減資／大額除權：台股一般股票單日漲跌停 10%，收盤對前一天跳超過 12%（ETF 25%）幾乎一定是股數變動，
+    把那天之前的價格按比例還原、張數反向調整（跟看盤軟體的還原權值一樣）。回還原了幾次"""
+    c = series['c']
+    n = len(c)
+    first = next((i for i, v in enumerate(c) if v is not None), None)
+    if first is None:
+        return 0
+    lim = .25 if code.startswith('00') else .12
+    events = []
+    for i in range(first + 6, n):                       # 新上市前五天沒有漲跌幅限制，跳過
+        if c[i] and c[i - 1] and abs(c[i] / c[i - 1] - 1) > lim:
+            ref = series['o'][i] if series['o'][i] else c[i]
+            r = ref / c[i - 1]
+            # 拆股／合股是整數比：開盤或收盤跟前一天的比例落在整數比 ±4% 內就用整數比，才不會把那天的漲跌一起算進去；
+            # 減資、除權的比例不固定，就用開盤價對前一天收盤
+            for cand in (r, c[i] / c[i - 1]):
+                hit = next((nice for nice in (1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 10, 2, 3, 4, 5, 10) if abs(cand / nice - 1) < .04), None)
+                if hit:
+                    r = hit
+                    break
+            events.append((i, r))
+    for i, r in events:
+        for k in ('o', 'h', 'l', 'c'):
+            a = series[k]
+            for j in range(i):
+                if a[j] is not None:
+                    a[j] = round(a[j] * r, 2)
+        for k in ('v', 'fi', 'it', 'dl', 'mg', 'ms'):
+            a = series[k]
+            for j in range(i):
+                if a[j] is not None:
+                    a[j] = int(round(a[j] / r))
+    return len(events)
+
+
+def cost_est(series, W):
+    """法人進場成本（平均成本法，跟 index.html 的 costEst 同一套）：回 {'fi': [淨買賣超, 成本], …}，成本只在淨買超且還握有部位時給"""
+    c, o, hh, ll = series['c'], series['o'], series['h'], series['l']
+    n = len(c)
+    out = {}
+    for k in ('fi', 'it', 'dl'):
+        arr = series[k]
+        if not any(v is not None for v in arr[-W:]):
+            continue
+        bl = sl = 0
+        pos = cost = 0.0
+        for i in range(max(0, n - W), n):
+            lots = arr[i]
+            if lots is None or c[i] is None:
+                continue
+            tp = (o[i] + hh[i] + ll[i] + c[i]) / 4 if (o[i] is not None and hh[i] is not None and ll[i] is not None) else c[i]
+            if lots > 0:
+                bl += lots
+                cost = (cost * pos + lots * tp) / (pos + lots)
+                pos += lots
+            elif lots < 0:
+                sl -= lots
+                pos = max(0.0, pos + lots)
+        net = bl - sl
+        out[k] = [net, round(cost, 2) if (net > 0 and pos > 0) else None]
+    return out
+
+
 # ── 主流程 ──
 KEYS = ('o', 'h', 'l', 'c', 'v', 'fi', 'it', 'dl', 'mg', 'ms')
 
@@ -1384,6 +1448,7 @@ def main():
     acc = {str(h): [0, 0.0, 0.0, 0.0] for h in HORIZ}     # 全市場回測合計：[次數, 方向命中, 目標達成, 誤差]（後三個先加權）
     BT_ERR = [0]
     n_call = {'long': 0, 'short': 0}
+    n_adj = 0
     MKT = market_feats(taiex, dates)
     n20 = min(20, len(dates))
     off = len(dates) - n20
@@ -1398,6 +1463,7 @@ def main():
             for k in KEYS:
                 v = row.get(k)
                 series[k].append(clean(v) if k in ('o', 'h', 'l', 'c') else v)
+        n_adj += adjust_splits(series, code)
         s = {'n': m.get('n', ''), 'm': m.get('m', ''), 'c': series['c'], 'v': series['v'],
              'k': {'from': kfrom, 'o': series['o'][kfrom:], 'h': series['h'][kfrom:], 'l': series['l'][kfrom:]},
              'x': {'from': xfrom}}
@@ -1437,6 +1503,9 @@ def main():
             tail = series[k][off:]
             if any(v is not None for v in tail):
                 h[k] = tail
+        cs = cost_est(series, 60)                       # 排行榜「股價在法人成本下又買超」要用
+        if cs:
+            h['cs'] = cs
         f = m.get('f') or {}
         for k in ('pe', 'yld'):
             if f.get(k) is not None:
@@ -1467,7 +1536,7 @@ def main():
     acc_out = {hz: [v[0], round(v[1] / v[0], 1), round(v[2] / v[0], 1), round(v[3] / v[0], 2)] for hz, v in acc.items() if v[0]}
     out = {'dates': dates[hoff:], 'updated': now.strftime('%Y-%m-%d %H:%M'), 'keep': HIST_KEEP, 'count': len(hist_q),
            'idx': {k: v[hoff:] for k, v in idx.items()}, 'chipDays': n20, 'q': hist_q, 'acc': acc_out, 'btDays': BT_DAYS, 'btStep': BT_STEP}
-    print('  回測：%s；今天建議做多 %d 檔、做空 %d 檔' % (acc_out, n_call['long'], n_call['short']), flush=True)
+    print('  回測：%s；今天建議做多 %d 檔、做空 %d 檔；還原權值 %d 次' % (acc_out, n_call['long'], n_call['short'], n_adj), flush=True)
     with open('history.json', 'w', encoding='utf-8') as fp:
         json.dump(out, fp, ensure_ascii=False, separators=(',', ':'))
     if news or not os.path.exists('news.json'):
