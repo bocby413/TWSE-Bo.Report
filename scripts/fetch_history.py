@@ -31,7 +31,7 @@ HIST_KEEP = 120         # 首頁用的精簡版 history.json 只留這麼多，�
 MIN_CODES = 800         # 少於這個檔數就當抓壞了，不覆蓋舊檔
 CHIP_BACK = 1250        # 法人與融資也補五年（每天要多抓四支，第一次要好幾個小時，從最近的往回補）
 LOOKBACK = 1900         # 往回補最多幾個「日曆日」，1250 個交易日大約是 1830 個日曆日
-TIME_BUDGET = 30 * 60      # 抓資料最多幾秒，之後每檔還要挑方法、學規則、考試（約十分鐘）再寫檔
+TIME_BUDGET = 20 * 60      # 抓資料最多幾秒（平日只要幾分鐘），之後每檔還要挑方法、學規則、模擬交易（約二十分鐘）再寫檔
                         # 回補五年要跑好幾次接力，一次不要太長，這樣每次的結果都能早點提交出去
 TWSE_GAP = 3.5          # 證交所限速大約 5 秒 3 次，保守一點
 TPEX_GAP = 1.5
@@ -808,7 +808,7 @@ MODELS = {               # 每檔試四種方法，特徵欄位見 _full_feature
     'C': ('技術＋籌碼＋大盤', list(range(17))),
     'D': ('動能精簡', [6, 7, 8, 9, 13, 14, 15, 16]),
 }
-WIN_CUTS = (50, 55, 60, 65)      # 出手門檻候選：相似日子的上漲機率至少要多少（做空對稱）
+WIN_CUTS = (35, 40, 45, 50, 55, 60)   # 出手門檻候選：相似日子裡「先碰到目標」的比例至少要多少（風險報酬比夠高時，四成也划算）
 EDGE_CUTS = (0., .5, 1.)         # 預估幅度至少要是這檔平常波動的幾倍
 EDGE_FLOOR = .006                # 再怎麼樣預估幅度也要超過來回交易成本（手續費 0.1425%×2 + 證交稅 0.3%），不然不值得進場
 RR_MIN = 1.                      # 風險報酬比（預估幅度 ÷ 不利那側的四分位）至少 1 才算一次出手
@@ -858,24 +858,93 @@ def _full_features(closes, vols, chips, mkt):
     return c, off, I, F
 
 
-def _analog_stats(Z, I, k, m, c, t, L_lim, K):
-    """第 k 列（第 t 天）跟前 m 列比距離，挑最像的 K 天，回各尺度的 [n, mean, med, p25, p75, win]"""
+def _pick_analogs(Z, I, k, m, K):
+    """第 k 列跟前 m 列比距離，挑最像的 K 天（相鄰 3 天內只挑一個），回 i 的 list"""
     import numpy as np
     d = np.sqrt(((Z[:m] - Z[k]) ** 2).sum(axis=1))
     top = min(len(d), 3 * K + 10)
     idx = np.argpartition(d, top - 1)[:top] if top < len(d) else np.arange(len(d))
     idx = idx[np.argsort(d[idx], kind='stable')]
-    picked = _pick([(int(I[j]), 0) for j in idx], K)
-    out = {}
+    return _pick([(int(I[j]), 0) for j in idx], K)
+
+
+def _paths(C, HI, LO):
+    """每個尺度先算好「從第 i 天進場後第 1..h 天的累計最高漲幅／最低跌幅」：RM[h][i, j-1]、RN[h][i, j-1]（小數）。
+    最後 h 天沒有完整路徑，用 NaN 補"""
+    import numpy as np
+    n = len(C)
+    RM, RN = {}, {}
     for h in HORIZ:
-        st = _stats([c[i + h] / c[i] - 1 for i in picked if i + h <= L_lim])
-        if st:
-            out[h] = st
-    return out, len(picked)
+        rm = np.full((n, h), np.nan)
+        rn = np.full((n, h), np.nan)
+        up = HI[1:] / C[:-1]                              # 第 i+1 天最高價 / 第 i 天收盤
+        dn = LO[1:] / C[:-1]
+        for j in range(h):
+            a = np.full(n, np.nan)
+            b = np.full(n, np.nan)
+            m = n - 1 - j
+            a[:m] = HI[1 + j:1 + j + m] / C[:m] - 1
+            b[:m] = LO[1 + j:1 + j + m] / C[:m] - 1
+            rm[:, j] = a if j == 0 else np.fmax(rm[:, j - 1], a)
+            rn[:, j] = b if j == 0 else np.fmin(rn[:, j - 1], b)
+        RM[h], RN[h] = rm, rn
+    return RM, RN
+
+
+def _first_hit(rows, T, ge):
+    """rows 是 (K, h) 的累計最高（或最低）幅度；回每列第一次 ≥T（ge=True）或 ≤T 的天數，沒碰到回 h+1"""
+    import numpy as np
+    hit = rows >= T if ge else rows <= T
+    anyh = hit.any(1)
+    return np.where(anyh, hit.argmax(1), rows.shape[1] + 1)
+
+
+def _sim(rm, rn, fin, T, S, side):
+    """rm/rn 是 (K, h) 路徑，fin 是第 h 天收盤報酬。回 (先到目標 布林, 先到停損 布林, 每筆損益)。同一天碰到算停損"""
+    import numpy as np
+    if side > 0:
+        tT, tS = _first_hit(rm, T, True), _first_hit(rn, S, False)
+    else:
+        tT, tS = _first_hit(rn, T, False), _first_hit(rm, S, True)
+    h = rm.shape[1]
+    win = (tT <= h) & (tT < tS)
+    loss = (tS <= h) & ~win
+    pnl = np.where(win, T, np.where(loss, S, fin)) * side
+    return win, loss, pnl
+
+
+def _plan(C, RM, RN, picked, h, L_lim):
+    """用相似日子的實際路徑定目標與停損：
+    做多：目標 = 相似日子 h 天內最高漲幅的中位數（一半有摸到）；停損 = 有摸到目標的那些日子途中最深跌幅的第 25 百分位（四分之三的贏家沒跌破）；
+    機率 = 逐日模擬先碰目標的比例；期望值 = p×目標 + (1-p)×停損（沒碰到的當作停損，保守）。放空對稱。
+    回 {'l': [T, S, p, ev], 's': [...], 'c': 收盤統計}，資料不夠回 None"""
+    import numpy as np
+    st = np.asarray([i for i in picked if i + h <= L_lim])
+    if len(st) < 5:
+        return None
+    rm, rn = RM[h][st], RN[h][st]
+    fin = C[st + h] / C[st] - 1
+    up, dn = rm[:, -1], rn[:, -1]
+    out = {'c': _stats([float(x) for x in fin])}
+    for side, key in ((+1, 'l'), (-1, 's')):
+        fav, adv = (up, dn) if side > 0 else (dn, up)
+        T = float(np.median(fav))
+        if side * T <= 0:
+            continue
+        winners = (fav >= T) if side > 0 else (fav <= T)
+        if winners.sum() < 3:
+            continue
+        S = float(np.percentile(adv[winners], 25 if side > 0 else 75))
+        if side * S >= 0:
+            continue
+        w, l, pnl = _sim(rm, rn, fin, T, S, side)
+        p = float(w.mean())
+        out[key] = [T, S, p, p * T * side + (1 - p) * S * side]
+    return out
 
 
 def stock_model(closes, vols, highs, lows, dates, chips, mkt):
-    """替一檔股票挑方法、學門檻、考試，再給今天的建議。
+    """替一檔股票挑方法、學門檻、考試，再給今天的建議（目標價／停損價來自相似日子的實際路徑）。
     回 (ai, bt)：ai 放進 history.json（今天的統計＋建議），bt 放進分片（回測明細）。資料不夠回 (None, None)"""
     import numpy as np
     c, off, I, F = _full_features(closes, vols, chips, mkt)
@@ -885,21 +954,23 @@ def stock_model(closes, vols, highs, lows, dates, chips, mkt):
     if L < 200 or I[-1] != L:
         return None, None
     has_x = not np.isnan(F[0, 10])
-    hi = [(highs[i + off] if highs[i + off] is not None else c[i]) for i in range(len(c))]
-    lo = [(lows[i + off] if lows[i + off] is not None else c[i]) for i in range(len(c))]
+    C = np.asarray(c, dtype=float)
+    HI = np.asarray([(highs[i + off] if highs[i + off] is not None else c[i]) for i in range(len(c))], dtype=float)
+    LO = np.asarray([(lows[i + off] if lows[i + off] is not None else c[i]) for i in range(len(c))], dtype=float)
+    HI, LO = np.maximum(HI, C), np.minimum(LO, C)
+    RM, RN = _paths(C, HI, LO)
     pos = {int(i): k for k, i in enumerate(I)}
-    # 這檔平常的波動：近 250 天各尺度漲跌幅絕對值的中位數
     sig = {}
     for h in HORIZ:
         a = sorted(abs(c[i] / c[i - h] - 1) for i in range(max(h, L - 250), L + 1))
         sig[h] = a[len(a) // 2] if a else .02
-    # 取樣日：從 L-5 往回每 BT_STEP 天
     t0 = L - 5
     ts = list(range(t0 - ((t0 - max(60, L - BT_DAYS - 4)) // BT_STEP) * BT_STEP, t0 + 1, BT_STEP))
     ts = [t for t in ts if t in pos]
     if len(ts) < 40:
         return None, None
     n_tr = int(len(ts) * TRAIN_FRAC)
+    t_split = ts[n_tr - 1]
     models = {}
     for key, (name, cols) in MODELS.items():
         if not has_x and key == 'B':
@@ -912,101 +983,126 @@ def stock_model(closes, vols, highs, lows, dates, chips, mkt):
         sd[sd == 0] = 1
         Z = sub / sd
         K_full = min(40, max(10, len(I) // 4))
-        preds = {h: [] for h in HORIZ}                 # (t, med, win, p25, p75, actual, reached)
+        preds = {h: [] for h in HORIZ}                 # 每筆：dict(t, plan, actual…)
         for t in ts:
-            k = pos[t]
             m = int(np.searchsorted(I, t - 5, side='right'))
             if m < 25:
                 continue
-            st, _ = _analog_stats(Z, I, k, m, c, t, t, min(K_full, max(10, m // 4)))
-            for h, v in st.items():
+            picked = _pick_analogs(Z, I, pos[t], m, min(K_full, max(10, m // 4)))
+            for h in HORIZ:
                 if t + h > L:
                     continue
-                med = v[2] / 100
-                act = c[t + h] / c[t] - 1
-                tgt = c[t] * (1 + med)
-                reached = (max(hi[t + 1:t + h + 1]) >= tgt) if med >= 0 else (min(lo[t + 1:t + h + 1]) <= tgt)
-                preds[h].append((t, med, v[5], v[3] / 100, v[4] / 100, act, reached))
-        today, k_used = _analog_stats(Z, I, pos[L], int(np.searchsorted(I, L - 5, side='right')), c, L, L, K_full)
-        models[key] = {'name': name, 'preds': preds, 'today': today, 'k': k_used, 'n': int(np.searchsorted(I, L - 5, side='right'))}
-    # 學規則：對每個 (方法, 尺度, 勝率門檻, 幅度門檻) 在練習段算「出手後方向對的比例」，挑最好的；考卷段另外算
+                pl = _plan(C, RM, RN, picked, h, t)
+                if not pl or not pl['c']:
+                    continue
+                rec = {'t': t, 'med': pl['c'][2] / 100, 'act': float(C[t + h] / C[t] - 1)}
+                for side, key2 in ((+1, 'l'), (-1, 's')):
+                    if key2 in pl:
+                        T, S, p, ev = pl[key2]
+                        w, l, pnl = _sim(RM[h][t:t + 1], RN[h][t:t + 1], np.array([rec['act']]), T, S, side)
+                        rec[key2] = (T, S, p, ev, bool(w[0]), bool(l[0]), float(pnl[0]))
+                preds[h].append(rec)
+        m_now = int(np.searchsorted(I, L - 5, side='right'))
+        picked = _pick_analogs(Z, I, pos[L], m_now, K_full)
+        today = {h: _plan(C, RM, RN, picked, h, L) for h in HORIZ}
+        models[key] = {'name': name, 'preds': preds, 'today': today, 'k': len(picked), 'n': m_now}
+    # 學規則：對每個 (方法, 尺度, 機率門檻, 期望值門檻) 在練習段模擬出手，看平均每筆損益，挑最好的；考卷段另外算
     best = None
     table = {}
+
+    def trades(seg, W, edge):
+        out = []
+        for r in seg:
+            for key2 in ('l', 's'):
+                if key2 not in r:
+                    continue
+                T, S, p, ev, w, l, pnl = r[key2]
+                if p * 100 >= W and ev >= edge and abs(T) / abs(S) >= RR_MIN:
+                    out.append(pnl)
+                    break
+        return out
+
     for key, mdl in models.items():
         table[key] = {}
         for h in HORIZ:
             P = mdl['preds'][h]
             if len(P) < 30:
                 continue
-            tr = [p for p in P if p[0] <= ts[n_tr - 1]]
-            ho = [p for p in P if p[0] > ts[n_tr - 1]]
-            dir_all = sum(1 for p in P if (p[1] >= 0) == (p[5] >= 0)) / len(P) * 100
-            dir_ho = (sum(1 for p in ho if (p[1] >= 0) == (p[5] >= 0)) / len(ho) * 100) if ho else None
+            tr = [r for r in P if r['t'] <= t_split]
+            ho = [r for r in P if r['t'] > t_split]
+            dir_all = sum(1 for r in P if (r['med'] >= 0) == (r['act'] >= 0)) / len(P) * 100
+            dir_ho = (sum(1 for r in ho if (r['med'] >= 0) == (r['act'] >= 0)) / len(ho) * 100) if ho else None
             table[key][str(h)] = [len(P), round(dir_all, 1), round(dir_ho, 1) if dir_ho is not None else None]
             for W in WIN_CUTS:
                 for E in EDGE_CUTS:
-                    edge = max(E * sig[h], EDGE_FLOOR)
-
-                    def calls(seg):
-                        out = []
-                        for p in seg:
-                            if p[2] >= W and p[1] >= edge and _rr(p[1], p[3]) >= RR_MIN:
-                                out.append(1 if p[5] > 0 else 0)
-                            elif p[2] <= 100 - W and p[1] <= -edge and _rr(-p[1], -p[4]) >= RR_MIN:
-                                out.append(1 if p[5] < 0 else 0)
-                        return out
-                    ctr, cho = calls(tr), calls(ho)
-                    if len(ctr) < 8:
+                    edge = E * sig[h] + EDGE_FLOOR
+                    ptr, pho = trades(tr, W, edge), trades(ho, W, edge)
+                    if len(ptr) < 8:
                         continue
-                    hit_tr = sum(ctr) / len(ctr)
-                    hit_ho = (sum(cho) / len(cho)) if cho else None
-                    score = (hit_tr, len(ctr), dir_all)
+                    avg_tr = sum(ptr) / len(ptr)
+                    win_tr = sum(1 for x in ptr if x > 0) / len(ptr)
+                    score = (round(avg_tr, 4), win_tr, len(ptr))
                     if best is None or score > best['score']:
                         best = {'score': score, 'mdl': key, 'h': h, 'W': W, 'E': E, 'edge': edge,
-                                'tr': [len(ctr), round(hit_tr * 100, 1)],
-                                'ho': [len(cho), round(hit_ho * 100, 1) if hit_ho is not None else None],
+                                'tr': [len(ptr), round(win_tr * 100, 1), round(avg_tr * 100, 2)],
+                                'ho': [len(pho), round(sum(1 for x in pho if x > 0) / len(pho) * 100, 1) if pho else None,
+                                       round(sum(pho) / len(pho) * 100, 2) if pho else None],
                                 'dir': [len(P), round(dir_all, 1), round(dir_ho, 1) if dir_ho is not None else None]}
     if best is None:
         return None, None
     mdl = models[best['mdl']]
     h = best['h']
-    ai = {'n': mdl['n'], 'k': mdl['k'], 'x': 1 if has_x else 0, 'mdl': best['mdl']}
-    for hh, v in mdl['today'].items():
-        ai[str(hh)] = v
+    ai = {'n': mdl['n'], 'k': mdl['k'], 'x': 1 if has_x else 0, 'mdl': best['mdl'], 'b': {}}
+    for hh, pl in mdl['today'].items():
+        if pl and pl['c']:
+            ai[str(hh)] = pl['c']
+            ai['b'][str(hh)] = {k2: [round(v[0] * 100, 2), round(v[1] * 100, 2), round(v[2] * 100, 1), round(v[3] * 100, 2)] for k2, v in pl.items() if k2 in ('l', 's')}
     rec = {'mdl': best['mdl'], 'name': mdl['name'], 'h': h, 'W': best['W'], 'E': best['E'], 'edge': round(best['edge'] * 100, 2),
-           'sig': round(sig[h] * 100, 2), 'tr': best['tr'], 'ho': best['ho'], 'dir': best['dir'], 'act': 'hold', 'why': ''}
-    tv = mdl['today'].get(h)
-    if tv:
-        med, win, p25, p75 = tv[2], tv[5], tv[3], tv[4]
-        rec.update({'med': med, 'win': win, 'p25': p25, 'p75': p75, 'ns': tv[0]})
-        edge = best['edge'] * 100
-        ok_ho = best['ho'][0] >= 5 and best['ho'][1] is not None and best['ho'][1] >= 55   # 考卷至少出手 5 次、對 55% 以上，不然規則沒被驗證過
-        rr_l, rr_s = _rr(med, p25), _rr(-med, -p75)
-        if win >= best['W'] and med >= edge:
-            ok = ok_ho and rr_l >= RR_MIN
-            rec['act'] = 'long' if ok else 'hold'
-            rec['why'] = 'ok' if ok else ('rr' if rr_l < RR_MIN else 'ho')
-            rec['rr'] = round(rr_l, 2)
-        elif win <= 100 - best['W'] and med <= -edge:
-            ok = ok_ho and rr_s >= RR_MIN
-            rec['act'] = 'short' if ok else 'hold'
-            rec['why'] = 'ok' if ok else ('rr' if rr_s < RR_MIN else 'ho')
-            rec['rr'] = round(rr_s, 2)
-        else:
-            rec['why'] = 'win' if not (win >= best['W'] or win <= 100 - best['W']) else 'edge'
-            rec['rr'] = round(rr_l if med >= 0 else rr_s, 2)
+           'sig': round(sig[h] * 100, 2), 'tr': best['tr'], 'ho': best['ho'], 'dir': best['dir'], 'act': 'hold', 'why': 'none'}
+    pl = mdl['today'].get(h)
+    if pl:
+        ok_ho = best['ho'][0] >= 5 and best['ho'][1] is not None and best['ho'][1] >= 55 and (best['ho'][2] or 0) > 0   # 考卷至少出手 5 次、勝率 55% 以上、平均有賺
+        rec['okho'] = 1 if ok_ho else 0
+        cand = []
+        for side, key2 in (('long', 'l'), ('short', 's')):
+            if key2 in pl:
+                T, S, p, ev = pl[key2]
+                cand.append((side, T, S, p, ev))
+        # 先看哪一邊符合規則；都不符合就把比較好的那邊列出來當參考
+        chosen = None
+        for side, T, S, p, ev in cand:
+            if p * 100 >= best['W'] and ev >= best['edge'] and abs(T) / abs(S) >= RR_MIN:
+                chosen = (side, T, S, p, ev)
+                break
+        if chosen:
+            side, T, S, p, ev = chosen
+            rec.update({'side': side, 'T': round(T * 100, 2), 'S': round(S * 100, 2), 'p': round(p * 100, 1), 'ev': round(ev * 100, 2), 'rr': round(abs(T) / abs(S), 2)})
+            rec['act'] = side if ok_ho else 'hold'
+            rec['why'] = 'ok' if ok_ho else 'ho'
+        elif cand:
+            side, T, S, p, ev = max(cand, key=lambda x: x[4])
+            rec.update({'side': side, 'T': round(T * 100, 2), 'S': round(S * 100, 2), 'p': round(p * 100, 1), 'ev': round(ev * 100, 2), 'rr': round(abs(T) / abs(S), 2)})
+            rec['why'] = 'p' if p * 100 < best['W'] else ('rr' if abs(T) / abs(S) < RR_MIN else 'ev')
     ai['rec'] = rec
-    # 分片：挑中的方法各尺度的準度、各方法成績表、最近 20 筆預測 vs 實際（挑中的尺度）
     bt = {'models': table, 'mdl': best['mdl'], 'h': h}
     for hh in HORIZ:
         P = mdl['preds'][hh]
         if len(P) < 10:
             continue
         n = len(P)
-        bt[str(hh)] = [n, round(sum(1 for p in P if (p[1] >= 0) == (p[5] >= 0)) / n * 100, 1),
-                       round(sum(1 for p in P if p[6]) / n * 100, 1), round(sum(abs(p[5] - p[1]) for p in P) / n * 100, 2)]
+        # 各尺度：方向命中、做多計畫目標先到的比例、停損先到的比例、做多計畫平均每筆
+        Ls = [r['l'] for r in P if 'l' in r]
+        bt[str(hh)] = [n, round(sum(1 for r in P if (r['med'] >= 0) == (r['act'] >= 0)) / n * 100, 1),
+                       round(sum(1 for x in Ls if x[4]) / len(Ls) * 100, 1) if Ls else None,
+                       round(sum(1 for x in Ls if x[5]) / len(Ls) * 100, 1) if Ls else None,
+                       round(sum(x[6] for x in Ls) / len(Ls) * 100, 2) if Ls else None]
     P = mdl['preds'][h]
-    last = [[dates[p[0] + off], round(p[1] * 100, 2), round(p[5] * 100, 2), 1 if p[6] else 0] for p in P]
+    last = []
+    for r in P:
+        x = r.get('l') or r.get('s')
+        if not x:
+            continue
+        last.append([dates[r['t'] + off], round(x[0] * 100, 2), round(x[1] * 100, 2), 1 if x[4] else (-1 if x[5] else 0), round(x[6] * 100, 2), 'l' if 'l' in r else 's'])
     bt['last'] = last[-2 * BT_LAST::2] if len(last) >= 2 else last
     return ai, bt
 
@@ -1331,10 +1427,11 @@ def main():
             r = ai['rec']
             h['ac'] = [r['dir'][0], r['dir'][1], r['ho'][1] if r['ho'][1] is not None else 0]
             for hz, st in bt.items():
-                if hz in acc:
+                if hz in acc and st[2] is not None:
                     acc[hz][0] += st[0]
-                    for j in (1, 2, 3):
-                        acc[hz][j] += st[j] * st[0]
+                    acc[hz][1] += st[1] * st[0]
+                    acc[hz][2] += st[2] * st[0]
+                    acc[hz][3] += st[4] * st[0]
             if r['act'] != 'hold':
                 n_call[r['act']] += 1
         for k in ('fi', 'it', 'dl', 'mg', 'ms'):

@@ -297,7 +297,7 @@ details.bt{margin:6px 0}details.bt summary{cursor:pointer;font-size:12px;color:v
           <button data-t="fiBuy">外資買超</button><button data-t="fiSell">外資賣超</button><button data-t="itBuy">投信買超</button><button data-t="itSell">投信賣超</button><button data-t="dlBuy">自營商買超</button><button data-t="dlSell">自營商賣超</button><button data-t="mgUp">融資增加</button><button data-t="mgDown">融資減少</button><button data-t="msUp">融券增加</button><button data-t="msDown">融券減少</button>
           <button data-t="aiLong">AI 建議做多</button><button data-t="aiShort">AI 建議做空</button>
         </div>
-        <p class="hint hide" id="aiHint">AI 建議排行：每檔都有自己的模型（排程每天重算）：各自從四種方法、三種時間尺度裡挑對它最準的，出手門檻也是從它自己的歷史學出來、再用最近三成沒看過的資料當考卷驗證。今天符合自己規則、而且考卷及格的才列進來。欄位是「挑中尺度的預估中位／相似日子上漲機率／考卷命中率」，跟個股頁的 AI 判斷是同一份結果。不是投資建議。<span id="accAll"></span></p>
+        <p class="hint hide" id="aiHint">AI 建議排行：每檔都有自己的模型（排程每天重算）：各自從四種方法、三種時間尺度裡挑對它最準的，出手門檻也是從它自己的歷史學出來、再用最近三成沒看過的資料當考卷驗證。今天符合自己規則、而且考卷及格的才列進來。欄位是「目標價／停損價的幅度、相似日子先碰目標的機率、考卷段平均每筆損益」，跟個股頁的 AI 判斷是同一份結果。目標與停損都來自相似日子的實際最高／最低價路徑，不是收盤中位數。不是投資建議。<span id="accAll"></span></p>
         <div class="filters">
           <select id="fMarket"><option value="">上市＋上櫃</option><option value="twse">只看上市</option><option value="tpex">只看上櫃</option></select>
           <select id="fVol"><option value="500">日均量 ≥ 500 張</option><option value="2000">日均量 ≥ 2000 張</option><option value="5000">日均量 ≥ 5000 張</option><option value="0">不限量</option></select>
@@ -1017,7 +1017,7 @@ function renderNews() {
 }
 
 /* ── 排行：一套名單邏輯，總覽、排行榜、法人動向都用 ── */
-const aiCell = d => '<span class="' + cls(d.med) + '">' + pct(d.med) + '</span>（' + d.h + ' 日）／ ' + d.win.toFixed(0) + '% ／ 考卷 ' + (d.r.ho[1] == null ? '—' : d.r.ho[1].toFixed(0) + '%');
+const aiCell = d => '目標 <span class="' + cls(d.T) + '">' + pct(d.T) + '</span>・停損 ' + pct(d.S) + '・機率 ' + d.p.toFixed(0) + '%・考卷 ' + (d.r.ho[2] == null ? '—' : pct(d.r.ho[2]) + '/筆');
 const RANK = {
   strong: { col: '20 日', val: a => a.ret20, key: a => a.score * 100 + a.ret20 },
   weak:   { col: '20 日', val: a => a.ret20, key: a => -(a.score * 100 + a.ret20) },
@@ -1036,8 +1036,8 @@ const RANK = {
   mgDown: { col: '融資 5 日', val: a => a.mg5, key: a => -a.mg5, only: a => a.mg5 != null && a.mg5 < 0 && a.mg >= 500 },
   msUp:   { col: '融券 5 日增減(張)', val: a => a.msChg, key: a => a.msChg, only: a => a.msChg > 0, raw: true },
   msDown: { col: '融券 5 日增減(張)', val: a => a.msChg, key: a => -a.msChg, only: a => a.msChg < 0, raw: true },
-  aiLong:  { col: '預估／上漲機率／考卷命中', only: (a, c) => { const d = aiFor(c); return d && d.act === 'long'; }, key: (a, c) => { const d = aiFor(c); return (d.r.ho[1] || 0) * 100 + d.med; }, fmtv: (a, c) => aiCell(aiFor(c)) },
-  aiShort: { col: '預估／上漲機率／考卷命中', only: (a, c) => { const d = aiFor(c); return d && d.act === 'short'; }, key: (a, c) => { const d = aiFor(c); return (d.r.ho[1] || 0) * 100 - d.med; }, fmtv: (a, c) => aiCell(aiFor(c)) },
+  aiLong:  { col: '目標／停損／先到目標機率／考卷每筆', only: (a, c) => { const d = aiFor(c); return d && d.act === 'long'; }, key: (a, c) => { const d = aiFor(c); return (d.ev || 0) * 100 + (d.r.ho[2] || 0); }, fmtv: (a, c) => aiCell(aiFor(c)) },
+  aiShort: { col: '目標／停損／先到目標機率／考卷每筆', only: (a, c) => { const d = aiFor(c); return d && d.act === 'short'; }, key: (a, c) => { const d = aiFor(c); return (d.ev || 0) * 100 + (d.r.ho[2] || 0); }, fmtv: (a, c) => aiCell(aiFor(c)) },
 };
 function rankList(tab, o) {
   const R = RANK[tab]; o = o || {};
@@ -1070,7 +1070,7 @@ function bindTable(t) {
 }
 function renderRank() {
   $('#aiHint').classList.toggle('hide', !/^ai/.test(TAB));
-  if (H.acc && H.acc['10'] && $('#accAll')) $('#accAll').innerHTML = '<br><b>整體</b>（全市場各檔挑中的方法、近 ' + (H.btDays || 500) + ' 個交易日、每 ' + (H.btStep || 5) + ' 天預測一次、共 ' + fmt(H.acc['10'][0], 0) + ' 次）：10 日方向命中率 <b>' + H.acc['10'][1].toFixed(1) + '%</b>、目標價碰到率 ' + H.acc['10'][2].toFixed(0) + '%' + (H.acc['20'] ? '；20 日方向命中率 ' + H.acc['20'][1].toFixed(1) + '%' : '') + '。';
+  if (H.acc && H.acc['10'] && $('#accAll')) $('#accAll').innerHTML = '<br><b>整體</b>（全市場各檔挑中的方法、近 ' + (H.btDays || 500) + ' 個交易日、每 ' + (H.btStep || 5) + ' 天預測一次、共 ' + fmt(H.acc['10'][0], 0) + ' 次）：10 日方向命中率 <b>' + H.acc['10'][1].toFixed(1) + '%</b>、做多計畫先到目標 ' + H.acc['10'][2].toFixed(0) + '%、平均每筆 ' + pct(H.acc['10'][3]) + (H.acc['20'] ? '；20 日方向命中率 ' + H.acc['20'][1].toFixed(1) + '%、平均每筆 ' + pct(H.acc['20'][3]) : '') + '（含練習段，偏樂觀；個股頁的考卷才是真的）。';
   const list = rankList(TAB, { mk: $('#fMarket').value, minV: +$('#fVol').value, etf: $('#fEtf').checked, limit: 30 });
   const t = $('#rankTable'); t.innerHTML = tableHtml(list, RANK[TAB]); bindTable(t);
 }
@@ -1169,23 +1169,20 @@ const AIR = {};
 const MODEL_NAME = { A: '純技術面', B: '技術＋籌碼', C: '技術＋籌碼＋大盤', D: '動能精簡' };
 function decide(a, ai) {
   const r = ai && ai.rec; if (!r) return null;
-  const price = a.c, h = r.h, med = r.med, p25 = r.p25, p75 = r.p75, sig = r.sig;
-  const act = r.act, note = [];
+  const price = a.c, h = r.h, act = r.act, note = [];
   if (act === 'long' && a.score <= -3) note.push('技術／籌碼／基本面綜合分數 ' + a.score + ' 偏空，跟這檔模型的方向相反，保守看');
   if (act === 'short' && a.score >= 3) note.push('技術／籌碼／基本面綜合分數 +' + a.score + ' 偏多，跟這檔模型的方向相反，保守看');
-  const dir = act === 'long' ? 1 : act === 'short' ? -1 : (med != null && med < 0 ? -1 : 1);
-  const tgt = med != null ? price * (1 + med / 100) : null;
-  const adverse = dir > 0 ? (p25 != null && p25 < 0 ? p25 : -sig) : (p75 != null && p75 > 0 ? p75 : sig);
-  const stop = adverse != null ? price * (1 + adverse / 100) : null;
-  const rr = r.rr != null ? r.rr : ((med != null && adverse) ? Math.abs(med) / Math.abs(adverse) : null);
+  const side = r.side || null, dir = side === 'short' ? -1 : 1;
+  const tgt = r.T != null ? price * (1 + r.T / 100) : null, stop = r.S != null ? price * (1 + r.S / 100) : null;
   const label = act === 'long' ? '適合做多進場' : act === 'short' ? '可考慮放空／先避開' : '現在不適合進場，觀望';
   const tone = act === 'long' ? 't-bull' : act === 'short' ? 't-bear' : 't-flat';
-  const ho = r.ho[1] == null ? '—' : r.ho[1].toFixed(0) + '%';
-  const why = { ok: '', ho: '今天的條件符合這檔的規則，但這條規則在考卷上只出手 ' + r.ho[0] + ' 次、對 ' + ho + '，還沒被驗證過，先不進場',
-    win: '相似日子的上漲機率 ' + (r.win == null ? '—' : r.win.toFixed(0) + '%') + '，沒到這檔自己的出手門檻（≥ ' + r.W + '% 做多、≤ ' + (100 - r.W) + '% 放空）',
-    edge: '預估幅度 ' + pct(med) + '，不到這檔的門檻 ±' + r.edge.toFixed(1) + '%（它平常 ' + h + ' 日波動 ' + sig.toFixed(1) + '% 的 ' + r.E + ' 倍，且至少要蓋過交易成本 0.6%）',
-    rr: '風險報酬比只有 ' + (r.rr == null ? '—' : r.rr.toFixed(1)) + '（預估幅度 ' + pct(med) + '，不利那側常見到 ' + pct(dir > 0 ? p25 : p75) + '），不到 1 不值得進場' }[r.why] || '';
-  return { act, label, tone, dir, tgt, stop, rr, med, win: r.win, h, r, adverse, why, note };
+  const hoTxt = r.ho[0] ? '出手 ' + r.ho[0] + ' 次、勝率 ' + (r.ho[1] == null ? '—' : r.ho[1].toFixed(0) + '%') + '、平均每筆 ' + (r.ho[2] == null ? '—' : pct(r.ho[2])) : '一次都沒出手';
+  const why = { ok: '', none: '相似日子太少，算不出這檔的目標價與停損價',
+    ho: '今天的條件符合這檔的規則，但這條規則在考卷上' + hoTxt + '，還沒被驗證過（要至少 5 次、勝率 55%、平均有賺），先不進場',
+    p: '相似日子裡先碰到目標價的比例只有 ' + (r.p == null ? '—' : r.p.toFixed(0) + '%') + '，沒到這檔自己的門檻 ' + r.W + '%',
+    rr: '風險報酬比 ' + (r.rr == null ? '—' : r.rr.toFixed(1)) + ' 不到 1（目標 ' + pct(r.T) + '、停損 ' + pct(r.S) + '），不值得進場',
+    ev: '期望值每筆 ' + pct(r.ev) + '，不到這檔的門檻 ' + r.edge.toFixed(1) + '%（它平常 ' + h + ' 日波動 ' + r.sig.toFixed(1) + '% 的 ' + r.E + ' 倍，再加交易成本 0.6%）' }[r.why] || '';
+  return { act, label, tone, side, dir, tgt, stop, T: r.T, S: r.S, p: r.p, ev: r.ev, rr: r.rr, h, r, why, note, hoTxt };
 }
 function aiFor(code) {
   if (code in AIR) return AIR[code];
@@ -1285,20 +1282,22 @@ function accuracyHtml(bt, d) {
   const r = d && d.r; const hz = bt.h || 10;
   const cell = f => HORIZ.map(x => { const v = bt[String(x)]; return '<td' + (x === hz ? ' class="pick"' : '') + '>' + (v ? f(v) : '—') + '</td>'; }).join('');
   const tone = v => v >= 60 ? 'up' : v < 50 ? 'down' : '';
-  let h = '<h3>這檔的成績單 <small>近 ' + (H.btDays || 500) + ' 個交易日、每 ' + (H.btStep || 5) + ' 天預測一次，只用當天以前的資料</small></h3>';
-  if (r) h += '<div class="rule">學出來的規則：用「' + esc(r.name || MODEL_NAME[r.mdl]) + '」看 <b>' + r.h + ' 日</b>，相似日子上漲機率 ≥ ' + r.W + '%、預估幅度 ≥ ' + r.edge.toFixed(1) + '%、風險報酬比 ≥ 1 才做多（放空對稱）。練習段出手 ' + r.tr[0] + ' 次對 ' + r.tr[1].toFixed(0) + '%，<b>考卷出手 ' + r.ho[0] + ' 次對 ' + (r.ho[1] == null ? '—' : r.ho[1].toFixed(0) + '%') + '</b>。</div>';
+  let h = '<h3>這檔的成績單 <small>近 ' + (H.btDays || 500) + ' 個交易日、每 ' + (H.btStep || 5) + ' 天模擬一次進場，只用當天以前的資料</small></h3>';
+  if (r) h += '<div class="rule">學出來的規則：用「' + esc(r.name || MODEL_NAME[r.mdl]) + '」看 <b>' + r.h + ' 日</b>，相似日子先碰目標的比例 ≥ ' + r.W + '%、期望值 ≥ ' + r.edge.toFixed(1) + '%、風險報酬比 ≥ 1 才出手。練習段出手 ' + r.tr[0] + ' 次、勝率 ' + r.tr[1].toFixed(0) + '%、平均每筆 ' + pct(r.tr[2]) + '；<b>考卷' + d.hoTxt + '</b>。</div>';
   h += '<table class="fan"><tr><th>挑中的方法</th>' + HORIZ.map(x => '<th' + (x === hz ? ' class="pick"' : '') + '>' + x + ' 日</th>').join('') + '</tr>' +
-    '<tr><td>預測次數</td>' + cell(v => v[0]) + '</tr>' +
+    '<tr><td>模擬次數</td>' + cell(v => v[0]) + '</tr>' +
     '<tr><td>漲跌方向猜對</td>' + cell(v => '<span class="' + tone(v[1]) + '">' + v[1].toFixed(0) + '%</span>') + '</tr>' +
-    '<tr><td>目標價有碰到</td>' + cell(v => v[2].toFixed(0) + '%') + '</tr>' +
-    '<tr><td>平均誤差</td>' + cell(v => '±' + v[3].toFixed(1) + '%') + '</tr></table>';
-  h += '<details class="bt"><summary>四種方法比較（整體命中／考卷命中）</summary><table class="fan"><tr><th></th>' + HORIZ.map(x => '<th>' + x + ' 日</th>').join('') + '</tr>' +
+    '<tr><td>做多：先到目標</td>' + cell(v => v[2] == null ? '—' : v[2].toFixed(0) + '%') + '</tr>' +
+    '<tr><td>做多：先到停損</td>' + cell(v => v[3] == null ? '—' : v[3].toFixed(0) + '%') + '</tr>' +
+    '<tr><td>做多：平均每筆</td>' + cell(v => v[4] == null ? '—' : '<span class="' + cls(v[4]) + '">' + pct(v[4]) + '</span>') + '</tr></table>';
+  h += '<details class="bt"><summary>四種方法比較（整體方向命中／考卷段）</summary><table class="fan"><tr><th></th>' + HORIZ.map(x => '<th>' + x + ' 日</th>').join('') + '</tr>' +
     Object.keys(bt.models).map(k => '<tr' + (k === bt.mdl ? ' class="pick"' : '') + '><td>' + esc(MODEL_NAME[k] || k) + (k === bt.mdl ? ' ★' : '') + '</td>' + HORIZ.map(x => { const v = bt.models[k][String(x)]; return '<td>' + (v ? v[1].toFixed(0) + '%／' + (v[2] == null ? '—' : v[2].toFixed(0) + '%') : '—') + '</td>'; }).join('') + '</tr>').join('') + '</table></details>';
   if (bt.last && bt.last.length) {
-    h += '<details class="bt"><summary>最近 ' + bt.last.length + ' 次 ' + hz + ' 日預測 vs 實際（每 10 個交易日一筆）</summary><table class="fan"><tr><th>預測日</th><th>預估 ' + hz + ' 日</th><th>實際</th><th>方向</th><th>目標價</th></tr>' +
-      bt.last.slice().reverse().map(x => '<tr><td>' + esc(x[0]) + '</td><td class="' + cls(x[1]) + '">' + pct(x[1]) + '</td><td class="' + cls(x[2]) + '">' + pct(x[2]) + '</td><td>' + ((x[1] >= 0) === (x[2] >= 0) ? '<span class="up">✓</span>' : '<span class="down">✗</span>') + '</td><td>' + (x[3] ? '<span class="up">到了</span>' : '<span class="down">沒到</span>') + '</td></tr>').join('') + '</table></details>';
+    const res = x => x[3] === 1 ? '<span class="up">先到目標</span>' : x[3] === -1 ? '<span class="down">先到停損</span>' : '到期結算';
+    h += '<details class="bt"><summary>最近 ' + bt.last.length + ' 次 ' + hz + ' 日模擬進場（每 10 個交易日一筆）</summary><table class="fan"><tr><th>進場日</th><th>方向</th><th>目標</th><th>停損</th><th>結果</th><th>損益</th></tr>' +
+      bt.last.slice().reverse().map(x => '<tr><td>' + esc(x[0]) + '</td><td>' + (x[5] === 's' ? '放空' : '做多') + '</td><td class="up">' + pct(x[1]) + '</td><td class="down">' + pct(x[2]) + '</td><td>' + res(x) + '</td><td class="' + cls(x[4]) + '">' + pct(x[4]) + '</td></tr>').join('') + '</table></details>';
   }
-  h += '<p class="hint">「方向猜對」是預估中位數跟實際漲跌同號的比例；「目標價有碰到」是那幾天內最高／最低價有沒有摸到預估價位。考卷是最近三成的樣本，挑方法、學門檻時完全沒用到。</p>';
+  h += '<p class="hint">每次模擬都是站在那一天、只用那天以前的資料算出目標與停損，再看之後實際走勢先碰到哪一個（同一天碰到算停損，都沒碰到就到期用收盤結算）。考卷是最近三成的樣本，挑方法、學門檻時完全沒用到。</p>';
   return h;
 }
 const pct1 = v => v == null ? '—' : (v > 0 ? '+' : '') + v.toFixed(1) + '%';
@@ -1333,17 +1332,19 @@ function aiHtml(a, an, price, bt, code) {
   let h = '<div class="card ai"><h2><i>✦</i>AI 判斷 <small>這檔專屬模型，依它自己的歷史學出來，不是保證</small></h2>';
   if (d) {
     const r = d.r, dim = d.act === 'hold' ? ' dim' : '';
-    const adv = d.adverse;
-    h += '<div class="verdict"><span class="badge ' + d.tone + '">' + esc(d.label) + '</span><span class="hint">看 ' + d.h + ' 日・考卷 ' + r.ho[0] + ' 次出手命中 ' + (r.ho[1] == null ? '—' : r.ho[1].toFixed(0) + '%') + '</span></div>' +
-      '<div class="tiles dec">' +
-      '<div class="tile"><b>進場價（現價）</b><span class="big">' + fmt(price) + '</span></div>' +
-      '<div class="tile' + dim + '"><b>' + (d.act === 'hold' ? '若' + (d.dir > 0 ? '做多' : '放空') + '的目標價' : '目標價') + '</b><span class="big ' + cls(d.med) + '">' + (d.tgt != null ? fmt(d.tgt) : '—') + '</span><em class="' + cls(d.med) + '">' + pct(d.med) + '</em></div>' +
-      '<div class="tile' + dim + '"><b>停損價</b><span class="big">' + (d.stop != null ? fmt(d.stop) : '—') + '</span><em class="' + cls(adv) + '">' + pct(adv) + '</em></div>' +
-      '<div class="tile"><b>風險報酬比</b><span>' + (d.rr != null ? d.rr.toFixed(1) : '—') + '</span></div>' +
-      '<div class="tile"><b>相似日子上漲機率</b><span>' + (d.win != null ? d.win.toFixed(0) + '%' : '—') + '</span><em>門檻 ' + r.W + '%</em></div>' +
-      '<div class="tile"><b>預計時間</b><span>' + d.h + ' 個交易日</span></div></div>';
+    h += '<div class="verdict"><span class="badge ' + d.tone + '">' + esc(d.label) + '</span><span class="hint">看 ' + d.h + ' 個交易日・考卷' + esc(d.hoTxt) + '</span></div>';
+    if (d.side) {
+      const sideTxt = d.side === 'short' ? '放空' : '做多';
+      h += '<div class="tiles dec">' +
+        '<div class="tile"><b>進場價（現價）</b><span class="big">' + fmt(price) + '</span></div>' +
+        '<div class="tile' + dim + '"><b>' + (d.act === 'hold' ? '若' + sideTxt + '的目標價' : '目標價') + '</b><span class="big ' + cls(d.T) + '">' + fmt(d.tgt) + '</span><em class="' + cls(d.T) + '">' + pct(d.T) + '</em></div>' +
+        '<div class="tile' + dim + '"><b>停損價</b><span class="big">' + fmt(d.stop) + '</span><em class="' + cls(d.S) + '">' + pct(d.S) + '</em></div>' +
+        '<div class="tile"><b>先到目標的機率</b><span>' + (d.p != null ? d.p.toFixed(0) + '%' : '—') + '</span><em>門檻 ' + r.W + '%</em></div>' +
+        '<div class="tile"><b>風險報酬比</b><span>' + (d.rr != null ? d.rr.toFixed(1) : '—') + '</span><em>要 ≥ 1</em></div>' +
+        '<div class="tile"><b>期望值（每筆）</b><span class="' + cls(d.ev) + '">' + pct(d.ev) + '</span><em>門檻 ' + r.edge.toFixed(1) + '%</em></div></div>';
+    }
     const why = [];
-    if (d.act !== 'hold') why.push('今天符合這檔學出來的規則：相似的 ' + (r.ns || '') + ' 天裡上漲機率 ' + d.win.toFixed(0) + '%、' + d.h + ' 日後中位 ' + pct(d.med) + '，考卷驗證過（出手 ' + r.ho[0] + ' 次對 ' + r.ho[1].toFixed(0) + '%）');
+    if (d.act !== 'hold') why.push('今天符合這檔學出來的規則：相似的 ' + (r.ns || ai_k(code)) + ' 天裡，' + d.h + ' 天內先碰目標（' + pct(d.T) + '）而不是停損（' + pct(d.S) + '）的比例 ' + d.p.toFixed(0) + '%，期望值每筆 ' + pct(d.ev) + '；這條規則在考卷上' + d.hoTxt);
     if (d.why) why.push(d.why);
     d.note.forEach(x => why.push(x));
     why.push('技術、籌碼、基本面合計 ' + (a.score > 0 ? '+' : '') + a.score + ' 分（' + a.label + '）');
@@ -1351,21 +1352,25 @@ function aiHtml(a, an, price, bt, code) {
     if (a.rsi <= 30) why.push('RSI 已超賣，空單追殺風險高');
     h += '<ul class="why">' + why.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>';
   } else h += '<p class="hint">這檔的專屬模型還沒算好（上市不滿一年，或排程還沒跑到）。</p>';
+  const bk = H.q[code] && H.q[code].ai && H.q[code].ai.b;
   if (an && an.h) {
-    const row = (name, f) => '<tr><td>' + name + '</td>' + HORIZ.map(x => '<td>' + f(an.h[x]) + '</td>').join('') + '</tr>';
+    const row = (name, f) => '<tr><td>' + name + '</td>' + HORIZ.map(x => '<td>' + f(an.h[x], x) + '</td>').join('') + '</tr>';
+    const plan = (x, k) => { const v = bk && bk[String(x)] && bk[String(x)][k]; return v ? fmt(price * (1 + v[0] / 100)) + '<br><small>停損 ' + fmt(price * (1 + v[1] / 100)) + '・' + v[2].toFixed(0) + '%</small>' : '—'; };
     h += '<h3>後 5／10／20 天粗估走勢</h3>';
     if (an.useOwn) h += '<p class="hint">用這檔挑中的方法（' + esc(d && d.r ? d.r.name : '技術面') + '），從近 ' + (an.own.pre ? an.own.n + 60 : an.span) + ' 個交易日裡找出跟今天最像的 ' + an.own.k + ' 天，統計它們之後的走勢：</p>';
     else h += '<p class="hint">這檔的歷史還不夠長，先用全市場過去' + (an.mkt.mode === 'exact' ? '六個條件完全相同' : '均線排列、RSI、MACD 相同') + '的情況統計：</p>';
     h += '<div class="chart"><canvas id="fan" height="170"></canvas></div>' +
       '<table class="fan"><tr><th></th>' + HORIZ.map(x => '<th>' + x + ' 日後</th>').join('') + '</tr>' +
-      row('樣本數', hh => hh ? fmt(hh.n, 0) : '—') + row('平均漲跌', hh => hh ? '<span class="' + cls(hh.mean) + '">' + pct(hh.mean) + '</span>' : '—') +
-      row('中位數', hh => hh ? '<span class="' + cls(hh.med) + '">' + pct(hh.med) + '</span>' : '—') + row('上漲機率', hh => hh ? hh.win.toFixed(0) + '%' : '—') +
-      row('常見區間', hh => hh ? pct1(hh.p25) + '～' + pct1(hh.p75) : '—') + row('<b>預估目標價</b>', hh => hh ? '<b>' + fmt(price * (1 + hh.med / 100)) + '</b>' : '—') + row('價位區間', hh => hh ? fmt(price * (1 + hh.p25 / 100)) + '～' + fmt(price * (1 + hh.p75 / 100)) : '—') + '</table>';
+      row('樣本數', hh => hh ? fmt(hh.n, 0) : '—') + row('收盤平均漲跌', hh => hh ? '<span class="' + cls(hh.mean) + '">' + pct(hh.mean) + '</span>' : '—') +
+      row('收盤中位數', hh => hh ? '<span class="' + cls(hh.med) + '">' + pct(hh.med) + '</span>' : '—') + row('收盤上漲機率', hh => hh ? hh.win.toFixed(0) + '%' : '—') +
+      (bk ? row('<b>做多目標價</b><br><small>停損・先到目標機率</small>', (hh, x) => plan(x, 'l')) + row('<b>放空目標價</b><br><small>停損・先到目標機率</small>', (hh, x) => plan(x, 's')) : '') + '</table>' +
+      (bk ? '<p class="hint">目標價 = 相似日子在這幾天內最高曾漲到的幅度取中位數（一半有摸到）；停損 = 有摸到目標的那些日子途中最深跌幅的第 25 百分位（四分之三的贏家沒跌破）。放空對稱。</p>' : '');
   } else h += '<p class="hint">資料不足 60 天，還算不出相似情境。</p>';
   h += accuracyHtml(bt, d);
-  h += '<p class="hint" style="margin-top:6px">怎麼算：每檔各自試四種方法（純技術、技術＋籌碼、技術＋籌碼＋大盤、動能精簡）配 5／10／20 日，用前七成歷史挑出對它最準的方法和出手門檻（勝率、幅度都是相對它自己的波動），後三成當考卷。今天的建議就是套這檔自己學出來的規則。是統計，不是保證；碰到財報、消息面會完全不一樣。</p></div>';
+  h += '<p class="hint" style="margin-top:6px">怎麼算：每檔各自試四種方法（純技術、技術＋籌碼、技術＋籌碼＋大盤、動能精簡）配 5／10／20 日，用前七成歷史挑出對它最賺的方法和出手門檻（機率、期望值都是相對它自己的波動），後三成當考卷。今天的建議就是套這檔自己學出來的規則。是統計，不是保證；碰到財報、消息面會完全不一樣。</p></div>';
   return h;
 }
+const ai_k = code => (H.q[code] && H.q[code].ai && H.q[code].ai.k) || '';
 
 /* ── 自選 ── */
 let WATCH = [];
