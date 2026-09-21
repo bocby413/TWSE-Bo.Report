@@ -5,7 +5,8 @@ name: 收盤價歷史
 # 一次跑不完會分幾次接著補。
 on:
   schedule:
-    - cron: '45 9 * * 1-5'    # UTC 09:45 = 台北 17:45，行情（14:30）、法人（16:00）、融資券（17:30）都出來了才跑一次；模型要算 45 分鐘，跑兩次是白跑
+    - cron: '45 9 * * 1-5'    # UTC 09:45 = 台北 17:45，行情（14:30）、法人（16:00）、融資券（17:30）都出來了才跑
+    - cron: '45 10 * * 1-5'   # UTC 10:45 = 台北 18:45，保險用：GitHub 的排程常遲到或漏掉；17:45 那次已經把今天更新好的話這次直接跳過
   workflow_dispatch:
 
 permissions:
@@ -31,9 +32,24 @@ jobs:
         run: |
           git fetch origin "${GITHUB_REF_NAME}"
           git reset --hard "origin/${GITHUB_REF_NAME}"
+      - name: 今天已經更新過就跳過
+        id: chk
+        # 只有排程的 run 會跳過；手動按 Run workflow 一律照跑
+        run: |
+          today=$(TZ=Asia/Taipei date +%F)
+          last=$(python -c "import json;print(json.load(open('ver.json'))['last'])" 2>/dev/null || echo none)
+          echo "今天 $today、資料最後交易日 $last"
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ] && [ "$last" = "$today" ]; then
+            echo "今天的資料已經更新過了，這次跳過"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: 抓歷史收盤價
+        if: steps.chk.outputs.skip != 'true'
         run: python scripts/fetch_history.py
       - name: 有變動才提交
+        if: steps.chk.outputs.skip != 'true'
         run: |
           git config user.name "history-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
