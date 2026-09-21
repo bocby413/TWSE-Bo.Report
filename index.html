@@ -1378,7 +1378,7 @@ function aiHtml(a, an, price, bt, code) {
         '<div class="tile"><b>風險報酬比</b><span>' + (d.rr != null ? d.rr.toFixed(1) : '—') + '</span><em>要 ≥ 1</em></div>' +
         '<div class="tile"><b>期望值（每筆）</b><span class="' + cls(d.ev) + '">' + pct(d.ev) + '</span><em>門檻 ' + r.edge.toFixed(1) + '%</em></div>' +
         '<div class="tile due"><b>結算日（最晚出場）</b><span class="big">' + esc(addTradingDays(H.dates[H.dates.length - 1], d.h).slice(5).replace('-', '/')) + '</span><em>' + hName(d.h) + '後，沒碰到目標或停損就照收盤出場</em></div></div>' +
-        '<div class="entry"><label>我的進場價 <input type="number" id="myPx" step="any" placeholder="' + fmt(price) + '"></label><label>進場日 <input type="date" id="myDate" value="' + esc(H.dates[H.dates.length - 1]) + '" max="' + esc(H.dates[H.dates.length - 1]) + '"></label><span class="hint" id="myPxOut">輸入實際買到的價位與日期，目標價與停損價照幅度換算；按「加入自選」會把這組數字鎖成計畫</span></div>';
+        '<div class="entry"><label>我的進場價 <input type="number" id="myPx" step="any" placeholder="' + fmt(price) + '"></label><label>進場日 <input type="date" id="myDate" value="' + esc(H.dates[H.dates.length - 1]) + '"></label><button class="star" id="addPlan">' + (PLANS[code] ? '↻ 更新計畫（目前是 ' + esc(PLANS[code].date) + ' 的）' : '＋ 新增到計畫') + '</button><span class="hint" id="myPxOut">填實際買到的價位與日期（盤中進場就填今天），目標、停損照幅度換算；按「新增到計畫」把這組數字鎖起來，到自選頁追蹤</span></div>';
     }
     const why = [];
     if (d.act !== 'hold') why.push('今天符合這檔學出來的規則：相似的 ' + (r.ns || ai_k(code)) + ' 天裡，' + hName(d.h) + '內先碰目標（' + pct(d.T) + '）而不是停損（' + pct(d.S) + '）的比例 ' + d.p.toFixed(0) + '%，期望值每筆 ' + pct(d.ev) + '；這條規則在考卷上' + d.hoTxt);
@@ -1428,19 +1428,23 @@ function snapPlan(code) {
   const d = aiFor(code), a = A[code]; if (!d || d.T == null) return null;
   const my = $('#myPx') && +$('#myPx').value; const entry = my > 0 ? my : a.c;
   const lastD = H.dates[H.dates.length - 1]; let ref = ($('#myDate') && $('#myDate').value) || lastD;
-  if (ref > lastD) ref = lastD;
-  // 進場日要是交易日；不是的話往前找最近的一個（狀態判斷從這天之後開始看）
-  if (!H.dates.includes(ref)) { const prev = H.dates.filter(d => d < ref); ref = prev.length ? prev[prev.length - 1] : lastD; }
-  const plan = { code, name: H.q[code].n, date: ref, ref: a.c, entry, side: d.side, act: d.act, T: d.T, S: d.S, h: d.h, tgt: entry * (1 + d.T / 100), stop: entry * (1 + d.S / 100), due: addTradingDays(ref, d.h), saved: new Date().toISOString().slice(0, 10) };
+  const manual = my > 0 || ref !== lastD;                  // 自己填了價位或日期 = 盤中進場，那天的走勢也要算進去
+  // 進場日可以比資料新（盤中進場、盤後才會有那天的資料）；比資料舊但不是交易日的，往前找最近的交易日
+  if (ref <= lastD && !H.dates.includes(ref)) { const prev = H.dates.filter(d => d < ref); ref = prev.length ? prev[prev.length - 1] : lastD; }
+  const plan = { code, name: H.q[code].n, date: ref, manual, ref: a.c, entry, side: d.side, act: d.act, T: d.T, S: d.S, h: d.h, tgt: entry * (1 + d.T / 100), stop: entry * (1 + d.S / 100), due: addTradingDays(ref, d.h), saved: new Date().toISOString().slice(0, 10) };
   PLANS[code] = plan; savePlans(); return plan;
 }
 /* 計畫追蹤：看記錄日之後的實際最高／最低價，先碰到目標還是停損，或已到期 */
 async function planStatus(pl) {
   const det = await shard(pl.code); const src = det ? det.s : H.q[pl.code]; const dates = det ? det.dates : H.dates;
-  const i0 = dates.indexOf(pl.date); const last = src.c[src.c.length - 1];
+  const last = src.c[src.c.length - 1];
   const out = { last, pnl: last != null ? (last / pl.entry - 1) * 100 * (pl.side === 'short' ? -1 : 1) : null, days: 0, status: 'run', hitDate: null };
+  if (pl.date > dates[dates.length - 1]) { out.status = 'wait'; out.left = pl.h; return out; }   // 盤中進場、那天的盤後資料還沒出來
+  let i0 = dates.indexOf(pl.date);
+  if (i0 < 0) i0 = dates.findIndex(d => d >= pl.date);                  // 進場日不是交易日：從下一個交易日開始看
   if (i0 < 0) { out.status = 'unknown'; return out; }
-  for (let i = i0 + 1; i < dates.length; i++) {
+  // 自己填的進場（盤中買的）從進場日當天開始看；用參考收盤價的從隔天開始
+  for (let i = i0 + (pl.manual ? 0 : 1); i < dates.length; i++) {
     out.days++;
     const hi = src.h && src.h[i] != null ? src.h[i] : src.c[i], lo = src.l && src.l[i] != null ? src.l[i] : src.c[i];
     if (hi == null || lo == null) continue;
@@ -1454,13 +1458,13 @@ async function planStatus(pl) {
 }
 async function renderPlans() {
   const box = $('#plans'); if (!box) return;
-  const list = WATCH.filter(c => PLANS[c] && H.q[c]);
-  if (!list.length) { box.innerHTML = '<div class="empty">還沒有鎖定的計畫。到個股分析按「☆ 加入自選」時，會把當天的 AI 建議（進場價、目標、停損、結算日）記下來放這裡追蹤。</div>'; return; }
+  const list = Object.keys(PLANS).filter(c => H.q[c]);
+  if (!list.length) { box.innerHTML = '<div class="empty">還沒有計畫。到個股分析的決策卡，填進場價、進場日，按「＋ 新增到計畫」，會把那組數字（方向、目標、停損、結算日）鎖起來放這裡追蹤。</div>'; return; }
   const rows = await Promise.all(list.map(async c => { const pl = PLANS[c]; const st = await planStatus(pl); return { pl, st }; }));
-  const badge = st => st.status === 'target' ? '<span class="tag t-bull">目標達成 ' + st.hitDate.slice(5) + '</span>' : st.status === 'stop' ? '<span class="tag t-bear">觸及停損 ' + st.hitDate.slice(5) + '</span>' : st.status === 'due' ? '<span class="tag t-flat">已到期，照收盤出場</span>' : st.status === 'unknown' ? '<span class="tag t-flat">資料對不上</span>' : '<span class="tag t-lean-bull">進行中・剩 ' + st.left + ' 個交易日</span>';
+  const badge = st => st.status === 'target' ? '<span class="tag t-bull">目標達成 ' + st.hitDate.slice(5) + '</span>' : st.status === 'stop' ? '<span class="tag t-bear">觸及停損 ' + st.hitDate.slice(5) + '</span>' : st.status === 'due' ? '<span class="tag t-flat">已到期，照收盤出場</span>' : st.status === 'wait' ? '<span class="tag t-flat">等進場日的盤後資料</span>' : st.status === 'unknown' ? '<span class="tag t-flat">資料對不上</span>' : '<span class="tag t-lean-bull">進行中・剩 ' + st.left + ' 個交易日</span>';
   box.innerHTML = '<div style="overflow-x:auto"><table class="fan plans"><tr><th>股票</th><th>記錄日</th><th>方向</th><th>進場價</th><th>目標</th><th>停損</th><th>結算日</th><th>現價</th><th>損益</th><th>狀態</th><th></th></tr>' +
     rows.map(({ pl, st }) => '<tr class="r" data-c="' + pl.code + '"><td><span class="n">' + esc(pl.name) + '</span><span class="c">' + esc(pl.code) + '</span></td><td>' + esc(pl.date) + '</td><td>' + (pl.side === 'short' ? '放空' : '做多') + (pl.act === 'hold' ? '<small style="color:var(--txt3)">（當時只是參考）</small>' : '') + '</td><td>' + fmt(pl.entry) + '</td><td class="up">' + fmt(pl.tgt) + '<small> ' + pct(pl.T) + '</small></td><td class="down">' + fmt(pl.stop) + '<small> ' + pct(pl.S) + '</small></td><td>' + esc(pl.due) + '</td><td>' + (st.last != null ? fmt(st.last) : '—') + '</td><td class="' + cls(st.pnl) + '">' + (st.pnl != null ? pct(st.pnl) : '—') + '</td><td>' + badge(st) + '</td><td><button class="mini" data-del="' + pl.code + '">移除</button></td></tr>').join('') + '</table></div>' +
-    '<p class="hint">計畫是加自選那天鎖定的，之後 AI 建議每天會變、計畫不會；狀態用記錄日之後每天的最高／最低價判斷，同一天都碰到算停損（跟回測一樣保守）。要換成今天的建議，到個股頁按「更新計畫」。</p>';
+    '<p class="hint">計畫是加自選那天鎖定的，之後 AI 建議每天會變、計畫不會；狀態用進場日之後每天的最高／最低價判斷（自己填進場價、日期的，從進場日當天就開始看），同一天都碰到算停損（跟回測一樣保守）。要換成今天的建議，到個股頁按「更新計畫」；移除只刪計畫，不影響自選。</p>';
   box.querySelectorAll('tr.r').forEach(tr => tr.onclick = e => { if (e.target.closest('button')) return; openStock(tr.dataset.c, true); });
   box.querySelectorAll('button[data-del]').forEach(b => b.onclick = () => { delete PLANS[b.dataset.del]; savePlans(); renderPlans(); });
 }
@@ -1545,7 +1549,7 @@ async function openStock(code, go_) {
   el.innerHTML =
     '<div class="card"><div class="head"><span class="nm">' + esc(s.n) + '</span><span class="cd">' + esc(code) + '</span>' +
     '<span class="mk">' + (s.m === 'tpex' ? '上櫃' : '上市') + (isETF(code) ? '・ETF' : '') + '</span>' +
-    '<button class="star' + (on ? ' on' : '') + '" id="star">' + (on ? '★ 已加自選' : '☆ 加入自選並鎖定今天的建議') + '</button>' + (on && PLANS[code] ? '<button class="star" id="replan" title="把計畫換成今天的建議">↻ 更新計畫（目前是 ' + esc(PLANS[code].date) + ' 的）</button>' : '') +
+    '<button class="star' + (on ? ' on' : '') + '" id="star">' + (on ? '★ 已加自選' : '☆ 加入自選') + '</button>' +
     '<span class="px num">' + fmt(a.c) + '</span><span class="ch num ' + cls(a.chg) + '">' + (a.chg > 0 ? '+' : '') + fmt(a.chg) + '（' + pct(a.pct) + '）</span></div>' +
     '<div class="verdict">' + badgeHtml(a) + '<div class="meter"><i style="left:' + (50 + Math.max(-MAXS, Math.min(MAXS, a.score)) * 50 / MAXS) + '%"></i></div>' +
     '<span class="hint">資料到 ' + esc(dates[dates.length - 1]) + '・' + a.n + ' 個交易日</span></div></div>' +
@@ -1567,8 +1571,8 @@ async function openStock(code, go_) {
       '</div>' +
     '</div>';
   const myPx = $('#myPx'); if (myPx) { const d0 = aiFor(code); myPx.oninput = () => { const v = +myPx.value; if (!(v > 0) || !d0 || d0.T == null) { $('#myPxOut').textContent = '輸入實際買到的價位，目標價與停損價照幅度換算'; $('#dTgt').textContent = fmt(d0.tgt); $('#dStop').textContent = fmt(d0.stop); return; } const t = v * (1 + d0.T / 100), st = v * (1 + d0.S / 100); $('#dTgt').textContent = fmt(t); $('#dStop').textContent = fmt(st); $('#myPxOut').innerHTML = '以 ' + fmt(v) + ' 進場：目標 <b>' + fmt(t) + '</b>（' + pct(d0.T) + '）、停損 <b>' + fmt(st) + '</b>（' + pct(d0.S) + '）' + (Math.abs(v / a.c - 1) > .03 ? '。跟參考價差超過 3%，情況已經不太一樣，建議等盤後更新再看' : ''); }; }
-  $('#star').onclick = () => { if (WATCH.includes(code)) { WATCH = WATCH.filter(c => c !== code); delete PLANS[code]; savePlans(); } else { WATCH.push(code); snapPlan(code); } saveWatch(); openStock(code); renderWatchHome(); };
-  const rp = $('#replan'); if (rp) rp.onclick = () => { snapPlan(code); openStock(code); };
+  $('#star').onclick = () => { if (WATCH.includes(code)) WATCH = WATCH.filter(c => c !== code); else WATCH.push(code); saveWatch(); openStock(code); renderWatchHome(); };
+  const ap = $('#addPlan'); if (ap) ap.onclick = () => { const pl = snapPlan(code); if (!pl) { $('#myPxOut').textContent = '這檔還沒有目標與停損，沒辦法建計畫'; return; } if (!WATCH.includes(code)) { WATCH.push(code); saveWatch(); } renderWatchHome(); openStock(code).then(() => { const o = $('#myPxOut'); if (o) o.innerHTML = '<b>已加入計畫</b>：' + (pl.side === 'short' ? '放空' : '做多') + ' ' + fmt(pl.entry) + '（' + esc(pl.date) + '）→ 目標 ' + fmt(pl.tgt) + '、停損 ' + fmt(pl.stop) + '、結算日 ' + esc(pl.due) + '。到「自選股」頁追蹤。'; }); };
   const f = ffill(s.c); const c = f.s; const off = f.off; const padN = arr => new Array(off).fill(null).concat(arr);
   // 60 日買超成本畫在 K 線上（只畫這段期間是淨買超的法人）
   // 法人成本線跟 K 線看到的區間連動：拖曳、縮放、切 3 月～5 年都重算那段的平均成本（只畫淨買超的）
