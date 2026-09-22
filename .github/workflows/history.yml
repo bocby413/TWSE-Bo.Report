@@ -5,8 +5,10 @@ name: 收盤價歷史
 # 一次跑不完會分幾次接著補。
 on:
   schedule:
-    - cron: '45 9 * * 1-5'    # UTC 09:45 = 台北 17:45，行情（14:30）、法人（16:00）、融資券（17:30）都出來了才跑
-    - cron: '45 10 * * 1-5'   # UTC 10:45 = 台北 18:45，保險用：GitHub 的排程常遲到或漏掉；17:45 那次已經把今天更新好的話這次直接跳過
+    # UTC 09:45 = 台北 17:45，行情（14:30）、法人（16:00）、融資券（17:30）都出來了才跑。
+    # GitHub 的排程很不準（9/21、9/22 都遲到好幾個小時甚至沒跑），所以 17:45 到 23:45 每小時排一次當保險；
+    # 只要前面某一次已經把今天更新好，後面的會在第一步就跳過，只花幾十秒
+    - cron: '45 9-15 * * 1-5'
   workflow_dispatch:
 
 permissions:
@@ -35,12 +37,17 @@ jobs:
       - name: 今天已經更新過就跳過
         id: chk
         # 只有排程的 run 會跳過；手動按 Run workflow 一律照跑
+        # 要更新的是「今天」的盤後資料；排程被 GitHub 拖過台北午夜才跑的話，要更新的還是前一天
         run: |
-          today=$(TZ=Asia/Taipei date +%F)
+          if [ "$(TZ=Asia/Taipei date +%H)" -ge 14 ]; then
+            want=$(TZ=Asia/Taipei date +%F)
+          else
+            want=$(TZ=Asia/Taipei date -d yesterday +%F)
+          fi
           last=$(python -c "import json;print(json.load(open('ver.json'))['last'])" 2>/dev/null || echo none)
-          echo "今天 $today、資料最後交易日 $last"
-          if [ "${GITHUB_EVENT_NAME}" = "schedule" ] && [ "$last" = "$today" ]; then
-            echo "今天的資料已經更新過了，這次跳過"
+          echo "要更新的交易日 $want、資料最後交易日 $last"
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ] && [ "$last" = "$want" ]; then
+            echo "這天的資料已經更新過了，這次跳過"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
